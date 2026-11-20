@@ -285,7 +285,8 @@ export default function CustomerPortal({ onSwitchToAgent }) {
 
   // Convert raw passenger.schedules into 7-Day Commute Plan items
   const renderWeeklyPlan = () => {
-    if (!passenger || !passenger.schedules) return [];
+    const sched = passenger?.schedules || passenger?.schedule;
+    if (!passenger || !sched) return [];
 
     const defaultDays = [
       'Saturday, Nov 14',
@@ -297,11 +298,11 @@ export default function CustomerPortal({ onSwitchToAgent }) {
       'Friday, Nov 20'
     ];
 
-    const keys = Object.keys(passenger.schedules);
+    const keys = Object.keys(sched);
     const dayKeys = keys.length > 0 ? keys : defaultDays;
 
     return dayKeys.map((day) => {
-      const shiftVal = String(passenger.schedules[day] || '').trim();
+      const shiftVal = String(sched[day] || '').trim();
       const sv = shiftVal.toUpperCase();
       const isOff =
         !shiftVal ||
