@@ -13,33 +13,39 @@ import {
   MessageSquare,
   Send,
   X,
-  ChevronUp,
-  ChevronDown,
-  Sparkles,
+  Search,
   LogOut,
   RefreshCw,
-  ShieldCheck
+  Sparkles
 } from 'lucide-react';
 
-export default function CustomerPortal({ onSwitchToAgent }) {
-  const [session, setSession] = useState(() => {
-    const saved = localStorage.getItem('gomini_pax_session');
-    return saved
-      ? JSON.parse(saved)
-      : {
-          name: 'Abdulrahman Nawar',
-          eid: '3367295',
-          phone: '+20 (10) 33774966',
-          route: 'R5 - imbaba Ring road',
-          collectionPoint: 'Mit Nama',
-          isVIP: false
-        };
-  });
+// Route offset in minutes for calculating pickup times from shift times
+function getRouteOffset(route) {
+  const r = (route || '').toUpperCase();
+  if (r.includes('R3')) return 80;  // 1 hr 20m
+  if (r.includes('R5')) return 95;  // 1 hr 35m
+  if (r.includes('R1') || r.includes('R4')) return 125; // 2 hr 5m
+  if (r.includes('R2')) return 130; // 2 hr 10m
+  if (r.includes('R6')) return 135; // 2 hr 15m
+  return 120; // 2 hr default
+}
 
-  const [searchEid, setSearchEid] = useState('');
-  const [showLoginModal, setShowLoginModal] = useState(!session);
-  const [trips, setTrips] = useState([]);
-  const [loadingTrips, setLoadingTrips] = useState(false);
+function calculatePickupTime(shiftTimeStr, route) {
+  if (!shiftTimeStr || !shiftTimeStr.includes(':')) return shiftTimeStr;
+  const [h, m] = shiftTimeStr.split(':').map(Number);
+  const offset = getRouteOffset(route);
+  let totalMins = h * 60 + (m || 0) - offset;
+  if (totalMins < 0) totalMins += 24 * 60;
+  const ph = Math.floor(totalMins / 60) % 24;
+  const pm = totalMins % 60;
+  return `${ph < 10 ? '0' + ph : ph}:${pm < 10 ? '0' + pm : pm}`;
+}
+
+export default function CustomerPortal({ onSwitchToAgent }) {
+  const [passenger, setPassenger] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [allRoster, setAllRoster] = useState([]);
 
   // Chat State
   const [showChat, setShowChat] = useState(false);
@@ -49,42 +55,75 @@ export default function CustomerPortal({ onSwitchToAgent }) {
   const [sendingMsg, setSendingMsg] = useState(false);
   const messagesEndRef = useRef(null);
 
-  // Load trips from Supabase for this passenger's route
-  const fetchRouteTrips = async (routeName) => {
-    if (!routeName) return;
-    setLoadingTrips(true);
+  // Load initial roster from Supabase
+  const loadRoster = async () => {
     try {
-      const { data, error } = await supabase
-        .from('trips')
-        .select('*')
-        .ilike('route', `%${routeName.split('-')[0].trim()}%`)
-        .order('id', { ascending: false });
+      const { data, error } = await supabase.from('roster').select('*');
+      if (!error && data && data.length > 0) {
+        setAllRoster(data);
 
-      if (!error && data) {
-        setTrips(data);
+        // Check if there is a saved EID in localStorage
+        const savedEid = localStorage.getItem('gomini_active_eid') || '3367295';
+        const match = data.find(
+          (p) => String(p.employee_id).includes(savedEid) || String(p.name).toLowerCase().includes('nawar')
+        );
+        if (match) {
+          setPassenger(match);
+        } else {
+          setPassenger(data[0]);
+        }
       }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingTrips(false);
+    } catch (e) {
+      console.error(e);
     }
   };
 
   useEffect(() => {
-    if (session?.route) {
-      fetchRouteTrips(session.route);
-      loadConversation();
-    }
-  }, [session]);
+    loadRoster();
 
-  // Load or create active chat conversation
-  const loadConversation = async () => {
-    if (!session) return;
-    try {
+    // Realtime listener on roster table: whenever sheet updates, screen updates live!
+    const channel = supabase
+      .channel('roster_live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'roster' }, (payload) => {
+        loadRoster();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // Handle Search EID or Name
+  const handleSearch = (e) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+    const q = searchQuery.trim().toLowerCase();
+    const found = allRoster.find(
+      (p) =>
+        String(p.employee_id).toLowerCase().includes(q) ||
+        String(p.name).toLowerCase().includes(q) ||
+        String(p.phone).includes(q)
+    );
+
+    if (found) {
+      setPassenger(found);
+      localStorage.setItem('gomini_active_eid', found.employee_id);
+      setSearchQuery('');
+    } else {
+      alert('No passenger found matching: ' + searchQuery);
+    }
+  };
+
+  // Load active chat when passenger changes
+  useEffect(() => {
+    if (!passenger) return;
+
+    const fetchChat = async () => {
       const { data } = await supabase
         .from('conversations')
         .select('*')
-        .eq('employee_id', session.eid)
+        .eq('employee_id', passenger.employee_id)
         .in('status', ['open', 'pending'])
         .order('id', { ascending: false })
         .limit(1);
@@ -92,11 +131,14 @@ export default function CustomerPortal({ onSwitchToAgent }) {
       if (data && data.length > 0) {
         setConversation(data[0]);
         loadMessages(data[0].id);
+      } else {
+        setConversation(null);
+        setMessages([]);
       }
-    } catch (e) {
-      console.error(e);
-    }
-  };
+    };
+
+    fetchChat();
+  }, [passenger]);
 
   const loadMessages = async (convId) => {
     const { data } = await supabase
@@ -111,12 +153,12 @@ export default function CustomerPortal({ onSwitchToAgent }) {
     }
   };
 
-  // Realtime subscription for conversation & messages
+  // Realtime subscription for open chat
   useEffect(() => {
     if (!conversation?.id) return;
 
     const channel = supabase
-      .channel('cust_chat_' + conversation.id)
+      .channel('pax_conv_' + conversation.id)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conversation.id}` },
@@ -135,33 +177,72 @@ export default function CustomerPortal({ onSwitchToAgent }) {
     };
   }, [conversation?.id]);
 
-  // Quick Action Handler
+  // Send message
+  const handleSendMessage = async (e) => {
+    e?.preventDefault();
+    if (!inputMsg.trim() || sendingMsg || !passenger) return;
+
+    setSendingMsg(true);
+    const body = inputMsg.trim();
+    setInputMsg('');
+
+    try {
+      let conv = conversation;
+      if (!conv) {
+        const { data } = await supabase
+          .from('conversations')
+          .insert({
+            employee_id: passenger.employee_id,
+            passenger_name: passenger.name,
+            passenger_phone: passenger.phone,
+            route: passenger.route,
+            category: 'general',
+            status: 'open',
+            last_message: body
+          })
+          .select()
+          .single();
+        conv = data;
+        setConversation(data);
+      }
+
+      if (conv) {
+        await supabase.from('messages').insert({
+          conversation_id: conv.id,
+          sender_type: 'passenger',
+          sender_name: passenger.name,
+          body: body
+        });
+
+        await supabase
+          .from('conversations')
+          .update({ last_message: body, last_message_at: new Date().toISOString(), status: 'open' })
+          .eq('id', conv.id);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSendingMsg(false);
+    }
+  };
+
   const handleQuickAction = async (actionKey) => {
+    if (!passenger) return;
     let userText = '';
     let botReply = '';
 
-    const activeTrip = trips[0];
-
     if (actionKey === 'where_is_bus') {
       userText = 'Where is my shuttle bus?';
-      if (activeTrip) {
-        botReply = `Your assigned shuttle for ${session.route} is [${activeTrip.vehicle_code || 'Assigned'}] (${activeTrip.vehicle_type || 'HI-ACE'}). Shift time: ${activeTrip.shift_time}, pickup time: ${activeTrip.trip_time || activeTrip.shift_time} at ${session.collectionPoint}. Driver: ${activeTrip.captain_name || 'Captain Assigned'} (${activeTrip.captain_phone || 'Call button available'}).`;
-      } else {
-        botReply = `Your shuttle for ${session.route} is scheduled according to your weekly plan. Pickup at ${session.collectionPoint}. A support agent will assist if you need real-time GPS.`;
-      }
+      botReply = `Your assigned route is [${passenger.route}]. Designated pickup station: ${passenger.collection_point || 'Designated Station'}. Driver details are displayed on your live trip card.`;
     } else if (actionKey === 'delay') {
       userText = 'Is the shuttle delayed?';
-      if (activeTrip && activeTrip.delay_minutes > 0) {
-        botReply = `Status update: Your shuttle (${activeTrip.vehicle_code}) has an estimated delay of ${activeTrip.delay_minutes} minutes due to traffic. We apologize for the inconvenience.`;
-      } else {
-        botReply = `Our dispatch system reports normal traffic for ${session.route}. If your bus has not arrived after pickup time, an agent can check with the captain.`;
-      }
+      botReply = `According to our dispatch matrix, operations are currently on schedule. If traffic occurs, your driver will notify the route channel.`;
     } else if (actionKey === 'missed') {
       userText = 'I missed my shuttle bus!';
-      botReply = `If you missed your scheduled shuttle, please alert your shift coordinator immediately. We are checking vehicle rotations to see if alternative boarding is available.`;
+      botReply = `If you missed your scheduled departure, please contact your shift supervisor immediately to arrange alternate boarding on the next rotation.`;
     } else if (actionKey === 'issue') {
-      userText = 'I want to report an issue (AC, Driver, Delay, Lost Item).';
-      botReply = `We apologize for any trouble. Please describe the issue below, and our support team will handle it immediately.`;
+      userText = 'I want to report an issue (AC, Driver, Delay, Lost item).';
+      botReply = `Please type the details of your issue below, and our support team will handle it immediately.`;
     }
 
     let conv = conversation;
@@ -169,10 +250,10 @@ export default function CustomerPortal({ onSwitchToAgent }) {
       const { data } = await supabase
         .from('conversations')
         .insert({
-          employee_id: session.eid,
-          passenger_name: session.name,
-          passenger_phone: session.phone,
-          route: session.route,
+          employee_id: passenger.employee_id,
+          passenger_name: passenger.name,
+          passenger_phone: passenger.phone,
+          route: passenger.route,
           category: actionKey,
           status: 'open',
           last_message: userText
@@ -188,7 +269,7 @@ export default function CustomerPortal({ onSwitchToAgent }) {
     await supabase.from('messages').insert({
       conversation_id: conv.id,
       sender_type: 'passenger',
-      sender_name: session.name,
+      sender_name: passenger.name,
       body: userText
     });
 
@@ -202,212 +283,113 @@ export default function CustomerPortal({ onSwitchToAgent }) {
     }, 400);
   };
 
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
-    if (!inputMsg.trim() || sendingMsg) return;
+  // Convert raw passenger.schedules into 7-Day Commute Plan items
+  const renderWeeklyPlan = () => {
+    if (!passenger || !passenger.schedules) return [];
 
-    setSendingMsg(true);
-    const text = inputMsg.trim();
-    setInputMsg('');
+    const defaultDays = [
+      'Saturday, Nov 14',
+      'Sunday, Nov 15',
+      'Monday, Nov 16',
+      'Tuesday, Nov 17',
+      'Wednesday, Nov 18',
+      'Thursday, Nov 19',
+      'Friday, Nov 20'
+    ];
 
-    try {
-      let conv = conversation;
-      if (!conv) {
-        const { data } = await supabase
-          .from('conversations')
-          .insert({
-            employee_id: session.eid,
-            passenger_name: session.name,
-            passenger_phone: session.phone,
-            route: session.route,
-            category: 'general',
-            status: 'open',
-            last_message: text
-          })
-          .select()
-          .single();
-        conv = data;
-        setConversation(data);
+    const keys = Object.keys(passenger.schedules);
+    const dayKeys = keys.length > 0 ? keys : defaultDays;
+
+    return dayKeys.map((day) => {
+      const shiftVal = String(passenger.schedules[day] || '').trim();
+      const sv = shiftVal.toUpperCase();
+      const isOff =
+        !shiftVal ||
+        sv === 'OFF' ||
+        sv.includes('NO TRANSPORTATION') ||
+        sv.includes('UPL') ||
+        sv.includes('PTO') ||
+        sv.includes('ANNUAL');
+
+      if (isOff) {
+        return {
+          day,
+          isOff: true,
+          statusText: shiftVal || 'OFF',
+          trips: []
+        };
       }
 
-      if (conv) {
-        await supabase.from('messages').insert({
-          conversation_id: conv.id,
-          sender_type: 'passenger',
-          sender_name: session.name,
-          body: text
-        });
+      // Parse shift times e.g. "17:00-02:00"
+      const parts = shiftVal.split('-');
+      const startShift = parts[0] ? parts[0].trim() : '17:00';
+      const endShift = parts[1] ? parts[1].trim() : '02:00';
 
-        await supabase
-          .from('conversations')
-          .update({ last_message: text, last_message_at: new Date().toISOString(), status: 'open' })
-          .eq('id', conv.id);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setSendingMsg(false);
-    }
+      const pickupTime = calculatePickupTime(startShift, passenger.route);
+
+      return {
+        day,
+        isOff: false,
+        shiftVal,
+        trips: [
+          {
+            direction: 'To Office',
+            shiftTime: startShift,
+            tripTime: pickupTime,
+            vehicle: 'HI-ACE (2H)',
+            collectionPoint: passenger.collection_point || 'Designated Station',
+            isD2D: false
+          },
+          {
+            direction: 'From Office',
+            shiftTime: endShift,
+            tripTime: endShift,
+            vehicle: 'HI-ACE (2H)',
+            collectionPoint: passenger.collection_point || 'Designated Station',
+            isD2D: true
+          }
+        ]
+      };
+    });
   };
 
-  // Mock 7-Day Commute Plan data (Matches TaskUs week structure)
-  const daysPlan = [
-    {
-      day: 'Saturday, Nov 14',
-      isOff: true,
-      statusText: 'OFF'
-    },
-    {
-      day: 'Sunday, Nov 15',
-      isOff: true,
-      statusText: 'OFF'
-    },
-    {
-      day: 'Monday, Nov 16',
-      isOff: false,
-      shiftVal: '17:00–02:00',
-      trips: [
-        {
-          direction: 'To Office',
-          shiftTime: '17:00',
-          tripTime: '15:25',
-          vehicle: 'HI-ACE (2H)',
-          vehicleType: 'HI-ACE',
-          collectionPoint: session?.collectionPoint || 'Mit Nama',
-          isD2D: false
-        },
-        {
-          direction: 'From Office',
-          shiftTime: '02:00',
-          tripTime: '02:00',
-          vehicle: 'HI-ACE (2H)',
-          vehicleType: 'HI-ACE',
-          collectionPoint: session?.collectionPoint || 'Mit Nama',
-          isD2D: true
-        }
-      ]
-    },
-    {
-      day: 'Tuesday, Nov 17',
-      isOff: false,
-      shiftVal: '17:00–02:00',
-      trips: [
-        {
-          direction: 'To Office',
-          shiftTime: '17:00',
-          tripTime: '15:25',
-          vehicle: 'HI-ACE (2H)',
-          vehicleType: 'HI-ACE',
-          collectionPoint: session?.collectionPoint || 'Mit Nama',
-          isD2D: false
-        },
-        {
-          direction: 'From Office',
-          shiftTime: '02:00',
-          tripTime: '02:00',
-          vehicle: 'HI-ACE (2H)',
-          vehicleType: 'HI-ACE',
-          collectionPoint: session?.collectionPoint || 'Mit Nama',
-          isD2D: true
-        }
-      ]
-    },
-    {
-      day: 'Wednesday, Nov 18',
-      isOff: false,
-      shiftVal: '17:00–02:00',
-      trips: [
-        {
-          direction: 'To Office',
-          shiftTime: '17:00',
-          tripTime: '15:25',
-          vehicle: 'HI-ACE (2H)',
-          vehicleType: 'HI-ACE',
-          collectionPoint: session?.collectionPoint || 'Mit Nama',
-          isD2D: false
-        },
-        {
-          direction: 'From Office',
-          shiftTime: '02:00',
-          tripTime: '02:00',
-          vehicle: 'HI-ACE (2H)',
-          vehicleType: 'HI-ACE',
-          collectionPoint: session?.collectionPoint || 'Mit Nama',
-          isD2D: true
-        }
-      ]
-    },
-    {
-      day: 'Thursday, Nov 19',
-      isOff: false,
-      shiftVal: '17:00–02:00',
-      trips: [
-        {
-          direction: 'To Office',
-          shiftTime: '17:00',
-          tripTime: '15:25',
-          vehicle: 'HI-ACE (2H)',
-          vehicleType: 'HI-ACE',
-          collectionPoint: session?.collectionPoint || 'Mit Nama',
-          isD2D: false
-        },
-        {
-          direction: 'From Office',
-          shiftTime: '02:00',
-          tripTime: '02:00',
-          vehicle: 'HI-ACE (2H)',
-          vehicleType: 'HI-ACE',
-          collectionPoint: session?.collectionPoint || 'Mit Nama',
-          isD2D: true
-        }
-      ]
-    },
-    {
-      day: 'Friday, Nov 20',
-      isOff: false,
-      shiftVal: '17:00–02:00',
-      trips: [
-        {
-          direction: 'To Office',
-          shiftTime: '17:00',
-          tripTime: '15:25',
-          vehicle: 'HI-ACE (2H)',
-          vehicleType: 'HI-ACE',
-          collectionPoint: session?.collectionPoint || 'Mit Nama',
-          isD2D: false
-        },
-        {
-          direction: 'From Office',
-          shiftTime: '02:00',
-          tripTime: '02:00',
-          vehicle: 'HI-ACE (2H)',
-          vehicleType: 'HI-ACE',
-          collectionPoint: session?.collectionPoint || 'Mit Nama',
-          isD2D: true
-        }
-      ]
-    }
-  ];
+  const weeklyPlan = renderWeeklyPlan();
 
   return (
     <div className="min-h-screen bg-[#070D1E] text-slate-100 flex flex-col font-sans selection:bg-pink-500/30">
       {/* Top Header */}
-      <header className="h-16 bg-[#0B132B]/80 backdrop-blur-md border-b border-slate-800/80 px-4 sm:px-8 flex items-center justify-between sticky top-0 z-30">
+      <header className="h-16 bg-[#0B132B]/90 backdrop-blur-md border-b border-slate-800 px-4 sm:px-8 flex items-center justify-between sticky top-0 z-30">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <span className="h-7 w-7 rounded-lg bg-pink-500 flex items-center justify-center font-black text-xs text-white">
+            <span className="h-8 w-8 rounded-xl bg-pink-500 flex items-center justify-center font-black text-xs text-white shadow-md shadow-pink-500/20">
               GM
             </span>
-            <span className="font-black text-lg text-white tracking-wide">go<span className="text-pink-500">mini.</span></span>
+            <span className="font-black text-xl text-white tracking-wide">
+              go<span className="text-pink-500">mini.</span>
+            </span>
           </div>
           <div className="h-4 w-px bg-slate-700 hidden sm:block"></div>
           <div>
             <div className="text-xs font-bold text-white hidden sm:block">GoMini Mobility</div>
-            <div className="text-[10px] text-slate-400 font-medium tracking-wider uppercase">Customer Schedule Portal</div>
+            <div className="text-[10px] text-slate-400 font-medium tracking-wider uppercase">
+              Customer Schedule Portal
+            </div>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Search EID */}
+          <form onSubmit={handleSearch} className="relative hidden md:block">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search EID (e.g. 3367295)..."
+              className="bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-1.5 pl-8 text-xs text-white focus:outline-none focus:border-cyan-500 w-52"
+            />
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+          </form>
+
           <button
             onClick={onSwitchToAgent}
             className="text-xs font-bold text-purple-300 bg-purple-500/10 border border-purple-500/30 hover:bg-purple-500/20 px-3 py-1.5 rounded-xl transition-all"
@@ -415,37 +397,23 @@ export default function CustomerPortal({ onSwitchToAgent }) {
             Agent Workspace →
           </button>
 
-          {session && (
-            <div className="flex items-center gap-2">
-              <div className="hidden md:flex items-center gap-2 bg-slate-900/80 px-3 py-1.5 rounded-xl border border-slate-800 text-xs text-slate-300">
-                <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
-                <span className="font-bold text-white truncate max-w-[160px]">{session.name}</span>
-              </div>
-              <button
-                onClick={() => {
-                  localStorage.removeItem('gomini_pax_session');
-                  setSession(null);
-                  setShowLoginModal(true);
-                }}
-                className="text-xs text-rose-400 hover:text-rose-300 font-bold bg-rose-500/10 border border-rose-500/20 hover:bg-rose-500/20 px-3 py-1.5 rounded-xl transition-all flex items-center gap-1.5"
-                title="Sign out"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Sign Out</span>
-              </button>
+          {passenger && (
+            <div className="hidden lg:flex items-center gap-2 bg-slate-900/80 px-3 py-1.5 rounded-xl border border-slate-800 text-xs text-slate-300">
+              <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+              <span className="font-bold text-white truncate max-w-[160px]">{passenger.name}</span>
             </div>
           )}
         </div>
       </header>
 
-      {/* Main Container */}
+      {/* Main Schedule Container */}
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-8 sm:px-6 lg:px-8">
-        {/* Passenger Profile Header Card */}
+        {/* Passenger Profile Card (Exact Match to Your Image) */}
         <div className="bg-[#0B1531] p-6 sm:p-8 rounded-3xl border border-slate-800 shadow-2xl mb-8 relative overflow-hidden">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
             <div className="flex items-center gap-4">
               <div className="h-16 w-16 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white text-2xl font-black shadow-lg shadow-cyan-500/20">
-                <span>{session?.name ? session.name.charAt(0).toUpperCase() : 'A'}</span>
+                <span>{passenger?.name ? passenger.name.charAt(0).toUpperCase() : 'A'}</span>
               </div>
               <div>
                 <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -453,16 +421,18 @@ export default function CustomerPortal({ onSwitchToAgent }) {
                     Passenger Schedule
                   </span>
                   <span className="text-xs text-slate-400 font-mono">
-                    EID: {session?.eid || '3367295'}
+                    EID: {passenger?.employee_id || '3367295'}
                   </span>
                 </div>
                 <h2 className="text-2xl sm:text-3xl font-black text-white">
-                  {session?.name || 'Abdulrahman Nawar'}
+                  {passenger?.name || 'Abdulrahman Nawar'}
                 </h2>
                 <p className="text-xs sm:text-sm text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
-                  <span>Phone: {session?.phone || '+20 (10) 33774966'}</span>
+                  <span>Phone: {passenger?.phone || '+20 (10) 33774966'}</span>
                   <span>•</span>
-                  <span className="text-cyan-400 font-semibold">{session?.route || 'R5 - imbaba Ring road'}</span>
+                  <span className="text-cyan-400 font-semibold">
+                    {passenger?.route || 'R5 - imbaba Ring road'}
+                  </span>
                 </p>
               </div>
             </div>
@@ -493,7 +463,7 @@ export default function CustomerPortal({ onSwitchToAgent }) {
               </span>
               <span className="text-sm font-bold text-white flex items-center gap-2">
                 <MapPin className="w-4 h-4 text-cyan-400" />
-                <span>{session?.collectionPoint || 'Mit Nama'}</span>
+                <span>{passenger?.collection_point || 'Mit Nama'}</span>
               </span>
             </div>
 
@@ -503,13 +473,13 @@ export default function CustomerPortal({ onSwitchToAgent }) {
               </span>
               <span className="text-sm font-bold text-white flex items-center gap-2">
                 <Navigation className="w-4 h-4 text-blue-400" />
-                <span>{session?.route || 'R5 - imbaba Ring road'}</span>
+                <span>{passenger?.route || 'R5 - imbaba Ring road'}</span>
               </span>
             </div>
           </div>
         </div>
 
-        {/* Weekly Commute Schedule Title */}
+        {/* Weekly Commute Schedule Header */}
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
           <h3 className="text-lg font-bold text-white flex items-center gap-2">
             <Clock className="w-5 h-5 text-cyan-400" />
@@ -518,9 +488,9 @@ export default function CustomerPortal({ onSwitchToAgent }) {
           <span className="text-xs text-slate-400 font-medium">Please be at your pickup point 5 mins prior</span>
         </div>
 
-        {/* Days Schedule Cards */}
+        {/* 7-Day Commute Schedule Cards */}
         <div className="space-y-4 mb-16">
-          {daysPlan.map((item) => (
+          {weeklyPlan.map((item) => (
             <div
               key={item.day}
               className={`rounded-2xl border transition-all ${
@@ -633,7 +603,7 @@ export default function CustomerPortal({ onSwitchToAgent }) {
         </div>
       </main>
 
-      {/* Floating Support Chat Widget */}
+      {/* Floating Support Chat Button */}
       <div className="fixed bottom-6 right-6 z-40">
         {!showChat && (
           <button
@@ -658,7 +628,7 @@ export default function CustomerPortal({ onSwitchToAgent }) {
                 </div>
                 <div>
                   <h4 className="text-sm font-bold text-white">GoMini Shuttle Support</h4>
-                  <p className="text-[11px] text-pink-400 font-medium">{session?.route}</p>
+                  <p className="text-[11px] text-pink-400 font-medium">{passenger?.route}</p>
                 </div>
               </div>
 
