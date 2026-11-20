@@ -1,0 +1,21 @@
+{
+  "short_name": "GoMini Support",
+  "name": "GoMini Shuttle Support & Chat",
+  "icons": [
+    {
+      "src": "/app-icon.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/app-icon.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#020617",
+  "theme_color": "#E83E8C",
+  "display": "standalone",
+  "orientation": "portrait"
+}

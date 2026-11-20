@@ -1,0 +1,522 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { supabase } from '../lib/supabase';
+import { MessageSquare, CheckCircle, Clock, AlertCircle, Send, User, ChevronRight, Phone, Bus, Filter, ShieldCheck } from 'lucide-react';
+
+export default function AgentDashboard({ onSwitchToPassenger }) {
+  const [agentName, setAgentName] = useState(() => localStorage.getItem('gomini_agent_name') || 'Agent Omar');
+  const [agentId, setAgentId] = useState(() => localStorage.getItem('gomini_agent_id') || '00000000-0000-0000-0000-000000000001');
+
+  const [activeTab, setActiveTab] = useState('unassigned'); // 'unassigned', 'mine', 'resolved'
+  const [conversations, setConversations] = useState([]);
+  const [selectedConv, setSelectedConv] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [inputMsg, setInputMsg] = useState('');
+  const [cannedResponses, setCannedResponses] = useState([]);
+  const [showCanned, setShowCanned] = useState(false);
+  const [claiming, setClaiming] = useState(false);
+  const [relatedTrip, setRelatedTrip] = useState(null);
+
+  const msgScrollRef = useRef(null);
+
+  // Load Canned responses
+  useEffect(() => {
+    supabase
+      .from('canned_responses')
+      .select('*')
+      .then(({ data }) => {
+        if (data) setCannedResponses(data);
+      });
+  }, []);
+
+  // Load Conversations
+  const fetchConversations = async () => {
+    let query = supabase.from('conversations').select('*').order('last_message_at', { ascending: false });
+
+    if (activeTab === 'unassigned') {
+      query = query.is('assigned_agent_id', null).eq('status', 'open');
+    } else if (activeTab === 'mine') {
+      query = query.eq('assigned_agent_id', agentId).in('status', ['open', 'pending']);
+    } else if (activeTab === 'resolved') {
+      query = query.eq('status', 'resolved');
+    }
+
+    const { data } = await query;
+    if (data) setConversations(data);
+  };
+
+  useEffect(() => {
+    fetchConversations();
+
+    // Realtime listener for new tickets
+    const channel = supabase
+      .channel('agent_convs')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'conversations' }, () => {
+        fetchConversations();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [activeTab, agentId]);
+
+  // Load Messages for selected ticket
+  const loadMessages = async (convId) => {
+    const { data } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('conversation_id', convId)
+      .order('created_at', { ascending: true });
+
+    if (data) {
+      setMessages(data);
+      setTimeout(() => msgScrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+    }
+  };
+
+  // Load trip context for selected ticket's route
+  const loadTripContext = async (route) => {
+    if (!route) return;
+    const { data } = await supabase
+      .from('trips')
+      .select('*')
+      .eq('route', route)
+      .order('id', { ascending: false })
+      .limit(1);
+
+    if (data && data.length > 0) {
+      setRelatedTrip(data[0]);
+    } else {
+      setRelatedTrip(null);
+    }
+  };
+
+  const handleSelectConversation = (conv) => {
+    setSelectedConv(conv);
+    loadMessages(conv.id);
+    loadTripContext(conv.route);
+  };
+
+  // Realtime subscription for open chat
+  useEffect(() => {
+    if (!selectedConv?.id) return;
+
+    const channel = supabase
+      .channel('agent_chat_' + selectedConv.id)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${selectedConv.id}` },
+        (payload) => {
+          setMessages((prev) => [...prev, payload.new]);
+          setTimeout(() => msgScrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [selectedConv?.id]);
+
+  // Claim Ticket (Atomic)
+  const handleClaimTicket = async () => {
+    if (!selectedConv || claiming) return;
+    setClaiming(true);
+
+    try {
+      const { data, error } = await supabase.rpc('claim_ticket', {
+        ticket_id: selectedConv.id,
+        agent_id: agentId,
+        agent_name: agentName
+      });
+
+      if (!error && data?.success) {
+        setSelectedConv((prev) => ({ ...prev, assigned_agent_id: agentId, assigned_agent_name: agentName }));
+        fetchConversations();
+      } else {
+        alert(data?.message || 'Could not claim ticket.');
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setClaiming(false);
+    }
+  };
+
+  // Resolve Ticket
+  const handleResolveTicket = async () => {
+    if (!selectedConv) return;
+    await supabase
+      .from('conversations')
+      .update({ status: 'resolved', resolved_at: new Date().toISOString() })
+      .eq('id', selectedConv.id);
+
+    await supabase.from('messages').insert({
+      conversation_id: selectedConv.id,
+      sender_type: 'system',
+      sender_name: 'System',
+      body: `Ticket marked as Resolved by ${agentName}`
+    });
+
+    setSelectedConv((prev) => ({ ...prev, status: 'resolved' }));
+    fetchConversations();
+  };
+
+  // Send Message
+  const handleSendAgentMessage = async (e) => {
+    e?.preventDefault();
+    if (!inputMsg.trim() || !selectedConv) return;
+
+    const body = inputMsg.trim();
+    setInputMsg('');
+    setShowCanned(false);
+
+    await supabase.from('messages').insert({
+      conversation_id: selectedConv.id,
+      sender_type: 'agent',
+      sender_name: agentName,
+      body: body
+    });
+
+    await supabase
+      .from('conversations')
+      .update({
+        last_message: body,
+        last_message_at: new Date().toISOString(),
+        status: 'pending'
+      })
+      .eq('id', selectedConv.id);
+  };
+
+  const handleApplyCanned = (text) => {
+    setInputMsg(text);
+    setShowCanned(false);
+  };
+
+  return (
+    <div className="h-screen bg-slate-950 flex flex-col overflow-hidden text-slate-100">
+      {/* Top Navbar */}
+      <header className="h-14 bg-slate-900 border-b border-slate-800 px-6 flex items-center justify-between flex-shrink-0 z-10">
+        <div className="flex items-center gap-3">
+          <div className="h-8 w-8 rounded-xl bg-purple-600 flex items-center justify-center font-bold text-xs text-white">
+            QA
+          </div>
+          <span className="font-bold text-sm text-white">GoMini Agent Workspace</span>
+          <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+            Online
+          </span>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-xs">
+            <User className="w-3.5 h-3.5 text-slate-400" />
+            <input
+              type="text"
+              value={agentName}
+              onChange={(e) => {
+                setAgentName(e.target.value);
+                localStorage.setItem('gomini_agent_name', e.target.value);
+              }}
+              className="bg-transparent font-bold text-white focus:outline-none w-28"
+            />
+          </div>
+          <button
+            onClick={onSwitchToPassenger}
+            className="text-xs font-bold text-slate-400 hover:text-white px-3 py-1.5 rounded-xl border border-slate-800 hover:border-slate-700 transition-all"
+          >
+            ← Passenger App
+          </button>
+        </div>
+      </header>
+
+      {/* 3-Pane Body */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Pane 1: Queue List */}
+        <aside className="w-80 border-r border-slate-800/80 bg-slate-950 flex flex-col flex-shrink-0">
+          {/* Tabs */}
+          <div className="p-3 border-b border-slate-800/80 grid grid-cols-3 gap-1 bg-slate-900/40">
+            <button
+              onClick={() => setActiveTab('unassigned')}
+              className={`py-1.5 text-xs font-bold rounded-lg transition-all ${
+                activeTab === 'unassigned' ? 'bg-pink-500 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Unassigned
+            </button>
+            <button
+              onClick={() => setActiveTab('mine')}
+              className={`py-1.5 text-xs font-bold rounded-lg transition-all ${
+                activeTab === 'mine' ? 'bg-purple-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              My Tickets
+            </button>
+            <button
+              onClick={() => setActiveTab('resolved')}
+              className={`py-1.5 text-xs font-bold rounded-lg transition-all ${
+                activeTab === 'resolved' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Resolved
+            </button>
+          </div>
+
+          {/* Ticket Items */}
+          <div className="flex-1 overflow-y-auto divide-y divide-slate-900">
+            {conversations.length === 0 ? (
+              <div className="p-8 text-center text-xs text-slate-500">
+                No tickets in this queue.
+              </div>
+            ) : (
+              conversations.map((c) => {
+                const isSelected = selectedConv?.id === c.id;
+                return (
+                  <div
+                    key={c.id}
+                    onClick={() => handleSelectConversation(c)}
+                    className={`p-3.5 cursor-pointer transition-all ${
+                      isSelected
+                        ? 'bg-slate-900 border-l-4 border-purple-500'
+                        : 'hover:bg-slate-900/50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-bold text-xs text-white truncate max-w-[150px]">{c.passenger_name}</span>
+                      <span className="text-[10px] text-slate-500 font-mono">
+                        {new Date(c.last_message_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+
+                    <div className="text-[11px] text-purple-400 font-medium truncate mb-1">
+                      {c.route}
+                    </div>
+
+                    <p className="text-xs text-slate-400 truncate line-clamp-1">
+                      {c.last_message || 'New request'}
+                    </p>
+
+                    <div className="mt-2 flex items-center justify-between text-[10px]">
+                      <span className="text-slate-500 font-mono">{c.employee_id}</span>
+                      {c.assigned_agent_name && (
+                        <span className="text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded-md">
+                          {c.assigned_agent_name}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </aside>
+
+        {/* Pane 2: Conversation Thread */}
+        <main className="flex-1 flex flex-col bg-slate-900/30 overflow-hidden">
+          {selectedConv ? (
+            <>
+              {/* Ticket Top bar */}
+              <div className="h-14 px-6 border-b border-slate-800 flex items-center justify-between bg-slate-900/80">
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span>{selectedConv.passenger_name}</span>
+                    <span className="text-xs text-slate-400 font-mono">({selectedConv.employee_id})</span>
+                  </h3>
+                  <p className="text-xs text-purple-400">{selectedConv.route}</p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {!selectedConv.assigned_agent_id && (
+                    <button
+                      onClick={handleClaimTicket}
+                      disabled={claiming}
+                      className="px-3.5 py-1.5 rounded-xl font-bold text-xs bg-purple-600 hover:bg-purple-500 text-white shadow-md shadow-purple-600/20 transition-all"
+                    >
+                      {claiming ? 'Claiming...' : 'Claim Ticket'}
+                    </button>
+                  )}
+
+                  {selectedConv.status !== 'resolved' && (
+                    <button
+                      onClick={handleResolveTicket}
+                      className="px-3 py-1.5 rounded-xl font-bold text-xs bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/30 transition-all flex items-center gap-1.5"
+                    >
+                      <CheckCircle className="w-3.5 h-3.5" />
+                      <span>Resolve</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Chat Messages */}
+              <div className="flex-1 p-6 overflow-y-auto space-y-3">
+                {messages.map((m) => {
+                  const isAgent = m.sender_type === 'agent';
+                  const isBot = m.sender_type === 'bot';
+                  const isSys = m.sender_type === 'system';
+
+                  if (isSys) {
+                    return (
+                      <div key={m.id} className="text-center my-2">
+                        <span className="text-[11px] bg-slate-800 text-slate-400 px-3 py-1 rounded-full border border-slate-700/60 font-medium">
+                          {m.body}
+                        </span>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div key={m.id} className={`flex flex-col ${isAgent ? 'items-end' : 'items-start'}`}>
+                      <div className="text-[10px] text-slate-400 font-semibold mb-1 px-1">
+                        {isAgent ? `🧑‍💼 You (${m.sender_name})` : isBot ? '🤖 Bot Auto-Answer' : `👤 ${m.sender_name}`}
+                      </div>
+                      <div
+                        className={`max-w-[70%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-sm ${
+                          isAgent
+                            ? 'bg-purple-600 text-white rounded-tr-none'
+                            : isBot
+                            ? 'bg-slate-800 text-slate-200 border border-slate-700 rounded-tl-none'
+                            : 'bg-slate-950 text-slate-100 border border-slate-800 rounded-tl-none'
+                        }`}
+                      >
+                        {m.body}
+                      </div>
+                      <span className="text-[9px] text-slate-500 mt-1 px-1">
+                        {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                  );
+                })}
+                <div ref={msgScrollRef} />
+              </div>
+
+              {/* Canned Quick Replies Drawer */}
+              {showCanned && (
+                <div className="p-3 bg-slate-900 border-t border-slate-800 flex flex-wrap gap-2 max-h-36 overflow-y-auto">
+                  {cannedResponses.map((cr) => (
+                    <button
+                      key={cr.id}
+                      onClick={() => handleApplyCanned(cr.message_ar)}
+                      className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-purple-500/50 text-left text-xs text-slate-300 transition-all flex items-center gap-2"
+                    >
+                      <span className="font-mono text-purple-400 font-bold">{cr.shortcut}</span>
+                      <span className="truncate max-w-[200px]">{cr.title}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Message Input */}
+              <form onSubmit={handleSendAgentMessage} className="p-4 bg-slate-900/90 border-t border-slate-800 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCanned(!showCanned)}
+                  className="px-3 py-2.5 rounded-xl text-xs font-bold bg-slate-950 border border-slate-800 text-purple-300 hover:border-purple-500/40"
+                  title="Canned responses shortcut"
+                >
+                  ⚡ /Canned
+                </button>
+                <input
+                  type="text"
+                  value={inputMsg}
+                  onChange={(e) => setInputMsg(e.target.value)}
+                  placeholder="Type a response to the rider..."
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-purple-500"
+                />
+                <button
+                  type="submit"
+                  disabled={!inputMsg.trim()}
+                  className="h-10 px-4 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-purple-600/20"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>Send</span>
+                </button>
+              </form>
+            </>
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center text-slate-500 text-xs">
+              <MessageSquare className="w-12 h-12 text-slate-700 mb-3 stroke-[1.2]" />
+              <p className="font-bold text-slate-400">Select a ticket from the left queue</p>
+              <p className="text-slate-600 mt-1">Live incoming requests will update in real-time</p>
+            </div>
+          )}
+        </main>
+
+        {/* Pane 3: Passenger & Trip Context */}
+        {selectedConv && (
+          <aside className="w-80 border-l border-slate-800/80 bg-slate-950 p-5 flex flex-col gap-5 flex-shrink-0">
+            <div>
+              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Passenger Profile</h4>
+              <div className="bg-slate-900/60 p-4 rounded-2xl border border-slate-800 space-y-2 text-xs">
+                <div>
+                  <div className="text-slate-500 text-[11px]">Employee Name</div>
+                  <div className="font-bold text-white text-sm">{selectedConv.passenger_name}</div>
+                </div>
+                <div>
+                  <div className="text-slate-500 text-[11px]">TaskUs EID</div>
+                  <div className="font-mono text-cyan-400 font-bold">{selectedConv.employee_id}</div>
+                </div>
+                <div>
+                  <div className="text-slate-500 text-[11px]">Assigned Route</div>
+                  <div className="text-purple-300 font-bold">{selectedConv.route}</div>
+                </div>
+                {selectedConv.passenger_phone && (
+                  <div>
+                    <div className="text-slate-500 text-[11px]">Phone</div>
+                    <a href={`tel:${selectedConv.passenger_phone}`} className="text-emerald-400 font-mono hover:underline">
+                      {selectedConv.passenger_phone}
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Live Dispatch Assignment</h4>
+              {relatedTrip ? (
+                <div className="bg-gradient-to-br from-slate-900 to-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3 text-xs shadow-md">
+                  <div className="flex items-center justify-between">
+                    <span className="px-2.5 py-0.5 rounded-lg text-xs font-black font-mono bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                      {relatedTrip.vehicle_code}
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-400">{relatedTrip.vehicle_type}</span>
+                  </div>
+
+                  <div className="space-y-1 text-slate-300">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Shift Time:</span>
+                      <span className="font-bold text-white">{relatedTrip.shift_time}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Pickup Start:</span>
+                      <span className="font-bold text-cyan-400">{relatedTrip.trip_time || relatedTrip.shift_time}</span>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-800 flex justify-between items-center">
+                    <div>
+                      <div className="text-[10px] text-slate-500">Driver</div>
+                      <div className="font-bold text-white text-xs">{relatedTrip.captain_name || 'Assigned'}</div>
+                    </div>
+                    {relatedTrip.captain_phone && (
+                      <a
+                        href={`tel:${relatedTrip.captain_phone}`}
+                        className="p-2 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30"
+                      >
+                        <Phone className="w-3.5 h-3.5" />
+                      </a>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="p-4 rounded-2xl border border-slate-800/80 bg-slate-900/30 text-center text-xs text-slate-500">
+                  No active trip data pushed yet from Google Sheets.
+                </div>
+              )}
+            </div>
+          </aside>
+        )}
+      </div>
+    </div>
+  );
+}
