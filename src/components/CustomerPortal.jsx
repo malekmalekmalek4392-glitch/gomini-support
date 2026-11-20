@@ -357,55 +357,36 @@ export default function CustomerPortal({ onSwitchToAgent }) {
   const weeklyPlan = renderWeeklyPlan();
 
   return (
-    <div className="min-h-screen bg-[#070D1E] text-slate-100 flex flex-col font-sans selection:bg-pink-500/30">
-      {/* Top Header */}
-      <header className="h-16 bg-[#0B132B]/90 backdrop-blur-md border-b border-slate-800 px-4 sm:px-8 flex items-center justify-between sticky top-0 z-30">
+    <div className="flex-1 text-slate-100 flex flex-col font-sans selection:bg-pink-500/30">
+      {/* Sub Header / Search & Active Passenger */}
+      <div className="bg-[#0B132B]/60 border-b border-slate-800/80 px-4 sm:px-8 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <span className="h-8 w-8 rounded-xl bg-pink-500 flex items-center justify-center font-black text-xs text-white shadow-md shadow-pink-500/20">
-              GM
-            </span>
-            <span className="font-black text-xl text-white tracking-wide">
-              go<span className="text-pink-500">mini.</span>
-            </span>
-          </div>
-          <div className="h-4 w-px bg-slate-700 hidden sm:block"></div>
-          <div>
-            <div className="text-xs font-bold text-white hidden sm:block">GoMini Mobility</div>
-            <div className="text-[10px] text-slate-400 font-medium tracking-wider uppercase">
-              Customer Schedule Portal
-            </div>
-          </div>
+          <span className="text-xs font-bold text-slate-300">Customer Timetable</span>
+          <span className="text-slate-600">•</span>
+          <span className="text-xs text-slate-400">7-Day Personalized Commute Plan</span>
         </div>
 
         <div className="flex items-center gap-3">
           {/* Search EID */}
-          <form onSubmit={handleSearch} className="relative hidden md:block">
+          <form onSubmit={handleSearch} className="relative">
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search EID (e.g. 3367295)..."
-              className="bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-1.5 pl-8 text-xs text-white focus:outline-none focus:border-cyan-500 w-52"
+              className="bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-1.5 pl-8 text-xs text-white focus:outline-none focus:border-cyan-500 w-48 sm:w-60"
             />
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
           </form>
 
-          <button
-            onClick={onSwitchToAgent}
-            className="text-xs font-bold text-purple-300 bg-purple-500/10 border border-purple-500/30 hover:bg-purple-500/20 px-3 py-1.5 rounded-xl transition-all"
-          >
-            Agent Workspace →
-          </button>
-
           {passenger && (
-            <div className="hidden lg:flex items-center gap-2 bg-slate-900/80 px-3 py-1.5 rounded-xl border border-slate-800 text-xs text-slate-300">
+            <div className="hidden sm:flex items-center gap-2 bg-slate-900/80 px-3 py-1.5 rounded-xl border border-slate-800 text-xs text-slate-300">
               <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
               <span className="font-bold text-white truncate max-w-[160px]">{passenger.name}</span>
             </div>
           )}
         </div>
-      </header>
+      </div>
 
       {/* Main Schedule Container */}
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-8 sm:px-6 lg:px-8">
