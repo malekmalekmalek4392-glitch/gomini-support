@@ -16,7 +16,10 @@ import {
   Sparkles,
   ShieldCheck,
   CheckCircle2,
-  ArrowLeft
+  ArrowLeft,
+  Languages,
+  Bell,
+  AlertTriangle
 } from 'lucide-react';
 
 // Route offset in minutes for calculating pickup times from shift times
@@ -63,6 +66,7 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
 
   // Chat State
   const [showChat, setShowChat] = useState(false);
+  const [chatLang, setChatLang] = useState(() => localStorage.getItem('gomini_chat_lang') || 'en');
   const [conversation, setConversation] = useState(null);
   const [messages, setMessages] = useState([]);
   const [inputMsg, setInputMsg] = useState('');
@@ -206,6 +210,37 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
     }
   }, [showChat]);
 
+  // Helper to detect passenger intent for chatbot automation vs agent escalations
+  const analyzeMessageIntent = (text) => {
+    const t = (text || '').toLowerCase().trim();
+
+    // Explicit issues or human agent request triggers:
+    const isMissed = t.includes('miss') || t.includes('فاتني') || t.includes('ملحقتش') || t.includes('راح عليا');
+    const isIssue = t.includes('issue') || t.includes('complaint') || t.includes('problem') || t.includes('ac') || t.includes('air') || t.includes('driver') || t.includes('lost') || t.includes('مشكلة') || t.includes('شكوى') || t.includes('تكييف') || t.includes('سائق') || t.includes('نسيت') || t.includes('مفقود') || t.includes('عطل');
+    const isAgentReq = t.includes('agent') || t.includes('human') || t.includes('employee') || t.includes('person') || t.includes('موظف') || t.includes('خدمة') || t.includes('حد يكلمني') || t.includes('مساعدة');
+
+    if (isMissed || isIssue || isAgentReq) {
+      return { canBotAnswer: false, intent: 'needs_agent' };
+    }
+
+    // Commute timing, bus location, schedule, or delay inquiries:
+    const isWhereBus = t.includes('where') || t.includes('bus') || t.includes('shuttle') || t.includes('فين') || t.includes('مكان') || t.includes('الأتوبيس') || t.includes('الاتوبيس') || t.includes('الباص') || t.includes('العربية');
+    const isSchedule = t.includes('schedule') || t.includes('time') || t.includes('timing') || t.includes('shift') || t.includes('when') || t.includes('pickup') || t.includes('موعد') || t.includes('مواعيد') || t.includes('جدول') || t.includes('وردية') || t.includes('ميعاد') || t.includes('امتى') || t.includes('التحرك');
+    const isDelay = t.includes('delay') || t.includes('late') || t.includes('traffic') || t.includes('متأخر') || t.includes('تأخير') || t.includes('زحمة');
+
+    if (isWhereBus || isSchedule || isDelay) {
+      return { canBotAnswer: true, intent: 'commute_info' };
+    }
+
+    // Common greetings
+    if (t === 'hi' || t === 'hello' || t === 'hey' || t === 'مرحبا' || t === 'سلام' || t === 'السلام عليكم') {
+      return { canBotAnswer: true, intent: 'greeting' };
+    }
+
+    // Default unhandled requests to human agent
+    return { canBotAnswer: false, intent: 'needs_agent' };
+  };
+
   // Generic send message function that supports both typed text and quick prompt buttons
   const sendMessageWithText = async (rawText) => {
     if (!rawText || !rawText.trim() || sendingMsg || !passenger) return;
@@ -215,6 +250,9 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
     setInputMsg('');
 
     try {
+      const { canBotAnswer, intent } = analyzeMessageIntent(body);
+      const category = canBotAnswer ? 'automated' : 'needs_agent';
+
       let conv = conversation;
       if (!conv) {
         const { data } = await supabase
@@ -224,17 +262,43 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
             passenger_name: passenger.name,
             passenger_phone: passenger.phone,
             route: passenger.route,
-            category: 'general',
+            category: category,
             status: 'open',
-            last_message: body
+            assigned_agent_id: null,
+            assigned_agent_name: null,
+            last_message: body,
+            last_message_at: new Date().toISOString()
           })
           .select()
           .single();
 
         conv = data;
         setConversation(data);
+      } else {
+        const updatePayload = {
+          status: 'open',
+          last_message: body,
+          last_message_at: new Date().toISOString(),
+          category: category,
+          updated_at: new Date().toISOString()
+        };
+
+        // If human assistance is needed or if ticket was previously resolved,
+        // reset assigned agent so it goes immediately to UNASSIGNED for agents!
+        if (!canBotAnswer || conv.status === 'resolved') {
+          updatePayload.assigned_agent_id = null;
+          updatePayload.assigned_agent_name = null;
+        }
+
+        await supabase
+          .from('conversations')
+          .update(updatePayload)
+          .eq('id', conv.id);
+
+        setConversation((prev) => ({ ...prev, ...updatePayload }));
       }
 
+      // 1. Insert Passenger message
       await supabase.from('messages').insert({
         conversation_id: conv.id,
         sender_type: 'passenger',
@@ -242,32 +306,67 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
         body: body
       });
 
-      await supabase
-        .from('conversations')
-        .update({ last_message: body, updated_at: new Date().toISOString() })
-        .eq('id', conv.id);
+      // 2. Query live trip context for this route
+      let tripData = null;
+      try {
+        const { data: tData } = await supabase
+          .from('trips')
+          .select('*')
+          .eq('route', passenger.route)
+          .order('id', { ascending: false })
+          .limit(1);
+        if (tData && tData.length > 0) tripData = tData[0];
+      } catch (err) {
+        console.warn('Trip query error:', err);
+      }
 
-      // Intelligent Bot Auto-Reply with real route and station awareness
-      setTimeout(async () => {
-        let reply = "Hello! A GoMini dispatch support agent has received your request and will assist you shortly.";
-        const bLower = body.toLowerCase();
-        if (bLower.includes('bus') || bLower.includes('where') || bLower.includes('shuttle')) {
-          reply = `Your shuttle for ${passenger.route || 'your designated route'} is scheduled according to your weekly plan. Pickup at ${passenger.collection_point || 'your station'}. A support agent will assist if you need real-time GPS.`;
-        } else if (bLower.includes('missed')) {
-          reply = "If you missed your scheduled shuttle, please alert your shift coordinator immediately. We are checking vehicle rotations to see if alternative boarding is available.";
-        } else if (bLower.includes('issue') || bLower.includes('report') || bLower.includes('ac') || bLower.includes('driver') || bLower.includes('lost')) {
-          reply = "We apologize for any trouble. Please describe the issue below, and our support team will handle it immediately.";
-        } else if (bLower.includes('delay') || bLower.includes('late')) {
-          reply = `We've flagged your report for ${passenger.name} (${passenger.employee_id}). Operations is tracking the vehicle status right now.`;
+      // 3. Extract actual passenger commute times
+      const activePlanDay = weeklyPlan.find(d => !d.isOff && d.trips && d.trips.length > 0) || weeklyPlan[0];
+      const toTrip = activePlanDay?.trips?.find(t => t.direction === 'To Office');
+      const fromTrip = activePlanDay?.trips?.find(t => t.direction === 'From Office');
+
+      const toTripTime = toTrip?.tripTime || '19:25';
+      const toShiftTime = toTrip?.shiftTime || '21:00';
+      const fromTripTime = fromTrip?.tripTime || '06:00';
+      const fromShiftTime = fromTrip?.shiftTime || '06:00';
+      const pickupStation = passenger.collection_point || toTrip?.collectionPoint || (chatLang === 'ar' ? 'محطتك المحددة' : 'your designated station');
+      const carNumber = tripData?.vehicle_code ? `${tripData.vehicle_code} (${tripData.vehicle_type || 'HI-ACE'})` : (toTrip?.vehicle || 'HI-ACE (2H)');
+      const captainName = tripData?.captain_name || (chatLang === 'ar' ? 'كابتن الرحلة (قيد التعيين)' : 'Assigned Captain (Dispatch Operations)');
+      const captainPhone = tripData?.captain_phone || (chatLang === 'ar' ? 'متاح بغرفة العمليات' : 'Available in Dispatch');
+
+      // 4. Formulate automated response in selected language
+      let botReply = '';
+      if (canBotAnswer) {
+        if (intent === 'greeting') {
+          botReply = chatLang === 'ar'
+            ? `مرحباً ${passenger.name}! كيف يمكننا مساعدة تنقلك اليوم؟ اسأل عن مكان الأتوبيس، المواعيد، أو الإبلاغ عن أي استفسار.`
+            : `Hello ${passenger.name}! How can we help your commute today? You can ask about your bus schedule, trip times, or report an issue.`;
+        } else {
+          // Commute Details (Where is bus / Schedule / Delay)
+          if (chatLang === 'ar') {
+            botReply = `📍 تفاصيل رحلتك لخط (${passenger.route || 'خطك المخصص'}):\n• موعد رحلة الذهاب للمكتب: ${toTripTime} (بداية الوردية: ${toShiftTime})\n• موعد رحلة العودة من المكتب: ${fromTripTime} (نهاية الوردية: ${fromShiftTime})\n• نقطة الركوب: ${pickupStation}\n\n⚠️ يرجى التواجد في نقطة الركوب قبل موعد الرحلة بـ 5 دقائق.\n\n🚌 رقم ونوع السيارة: ${carNumber}\n👤 كابتن الرحلة: ${captainName}\n📞 هاتف الكابتن: ${captainPhone}\n\nفريق التحكم وغرفة العمليات يتابع حركة الخط مباشرة.`;
+          } else {
+            botReply = `📍 Shuttle Details for ${passenger.route || 'your designated route'}:\n• To Office Trip Time: ${toTripTime} (Shift: ${toShiftTime})\n• From Office Trip Time: ${fromTripTime} (Shift: ${fromShiftTime})\n• Pickup Location: ${pickupStation}\n\n⚠️ Please be at pickup point 5 minutes before trip time.\n\n🚌 Car / Vehicle: ${carNumber}\n👤 Captain: ${captainName}\n📞 Captain Phone: ${captainPhone}\n\nOur dispatch operations team is tracking this route live.`;
+          }
         }
+      } else {
+        // Needs Human Support Agent (Issue / Missed bus / complex inquiry)
+        if (chatLang === 'ar') {
+          botReply = `نعتذر عن أي مشكلة أو إزعاج. تم تحويل استفسارك لغرفة العمليات وسنقوم بتوصيلك بأحد ممثلي الدعم فوراً لمساعدتك.`;
+        } else {
+          botReply = `We apologize for any trouble. We have alerted our dispatch team and will connect you to a support agent shortly to assist you.`;
+        }
+      }
 
+      // 5. Insert bot reply
+      setTimeout(async () => {
         await supabase.from('messages').insert({
           conversation_id: conv.id,
           sender_type: 'bot',
           sender_name: 'GoMini Bot',
-          body: reply
+          body: botReply
         });
-      }, 500);
+      }, 450);
 
     } catch (err) {
       console.error(err);
@@ -652,6 +751,7 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
           />
 
           <div
+            dir={chatLang === 'ar' ? 'rtl' : 'ltr'}
             className="fixed inset-0 sm:inset-y-0 sm:right-0 sm:left-auto w-full sm:w-96 bg-[#0B132B] sm:border-l border-slate-800 shadow-2xl z-50 flex flex-col h-[100dvh] sm:h-screen animate-in slide-in-from-right duration-200"
           >
             {/* Chat Header with safe-area padding for mobile notches/dynamic island */}
@@ -669,30 +769,48 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
                   title="Back"
                   aria-label="Back"
                 >
-                  <ArrowLeft className="w-5 h-5 text-slate-200" />
+                  <ArrowLeft className={`w-5 h-5 text-slate-200 ${chatLang === 'ar' ? 'rotate-180' : ''}`} />
                 </button>
                 <div className="h-9 w-9 rounded-xl bg-pink-500/20 border border-pink-500/30 flex items-center justify-center text-pink-400 shrink-0">
                   <Sparkles className="w-5 h-5" />
                 </div>
                 <div className="min-w-0">
-                  <h4 className="text-sm font-bold text-white truncate leading-tight">GoMini Support</h4>
+                  <h4 className="text-sm font-bold text-white truncate leading-tight">
+                    {chatLang === 'ar' ? 'دعم جو ميني' : 'GoMini Support'}
+                  </h4>
                   <p className="text-[11px] text-emerald-400 flex items-center gap-1.5 mt-0.5 truncate">
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
-                    AI Agent & Dispatch Online
+                    {chatLang === 'ar' ? 'المساعد الآلي والعمليات متاح الآن' : 'AI Agent & Dispatch Online'}
                   </p>
                 </div>
               </div>
 
-              {/* Close Button X - Prominently visible and styled */}
-              <button
-                type="button"
-                onClick={() => setShowChat(false)}
-                className="h-9 w-9 rounded-full bg-slate-800/90 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 border border-slate-700 hover:border-rose-500/40 flex items-center justify-center transition-all shadow-md active:scale-90 shrink-0 cursor-pointer"
-                title="Close chat"
-                aria-label="Close chat"
-              >
-                <X className="w-5 h-5 stroke-[2.5]" />
-              </button>
+              {/* Language Switcher & Close Button */}
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = chatLang === 'en' ? 'ar' : 'en';
+                    setChatLang(next);
+                    localStorage.setItem('gomini_chat_lang', next);
+                  }}
+                  className="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-slate-800/90 hover:bg-slate-700 text-cyan-400 hover:text-cyan-300 border border-slate-700 flex items-center gap-1 transition-all cursor-pointer active:scale-95"
+                  title={chatLang === 'en' ? 'التبديل إلى العربية' : 'Switch to English'}
+                >
+                  <Languages className="w-3.5 h-3.5" />
+                  <span>{chatLang === 'en' ? 'عربي' : 'EN'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowChat(false)}
+                  className="h-9 w-9 rounded-full bg-slate-800/90 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 border border-slate-700 hover:border-rose-500/40 flex items-center justify-center transition-all shadow-md active:scale-90 shrink-0 cursor-pointer"
+                  title="Close chat"
+                  aria-label="Close chat"
+                >
+                  <X className="w-5 h-5 stroke-[2.5]" />
+                </button>
+              </div>
             </div>
 
             {/* Messages Body */}
@@ -702,19 +820,25 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
                   <div className="h-12 w-12 rounded-2xl bg-slate-800/80 flex items-center justify-center text-slate-500 mb-3">
                     <MessageSquare className="w-6 h-6" />
                   </div>
-                  <p className="text-xs font-semibold text-slate-300">How can we help your commute today?</p>
-                  <p className="text-[11px] text-slate-500 mt-1">Tap a quick action below or ask about bus location, report a delay, or request assistance.</p>
+                  <p className="text-xs font-semibold text-slate-300">
+                    {chatLang === 'ar' ? 'كيف يمكننا مساعدة تنقلك اليوم؟' : 'How can we help your commute today?'}
+                  </p>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    {chatLang === 'ar'
+                      ? 'اضغط على أحد الخيارات السريعة أدناه أو اسأل عن الأتوبيس، التأخير، أو طلب مساعدة.'
+                      : 'Tap a quick action below or ask about bus location, report a delay, or request assistance.'}
+                  </p>
                 </div>
               ) : (
                 messages.map((m) => {
                   const isPax = m.sender_type === 'passenger';
                   return (
-                    <div key={m.id} className={`flex flex-col ${isPax ? 'items-end' : 'items-start'}`}>
+                    <div key={m.id} className={`flex flex-col ${isPax ? (chatLang === 'ar' ? 'items-start' : 'items-end') : (chatLang === 'ar' ? 'items-end' : 'items-start')}`}>
                       <span className="text-[10px] text-slate-500 mb-0.5 px-1 font-medium">
-                        {isPax ? 'You' : m.sender_name || 'Support'}
+                        {isPax ? (chatLang === 'ar' ? 'أنت' : 'You') : (chatLang === 'ar' ? 'خدمة العملاء' : (m.sender_name || 'Support'))}
                       </span>
                       <div
-                        className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-xs ${
+                        className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-xs whitespace-pre-line leading-relaxed ${
                           isPax
                             ? 'bg-gradient-to-r from-pink-500 to-rose-600 text-white rounded-tr-none shadow-md shadow-pink-500/10'
                             : 'bg-[#0F1B3E] text-slate-200 border border-slate-700/60 rounded-tl-none'
@@ -733,31 +857,31 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
             <div className="px-3 py-2 bg-[#080E24]/90 border-t border-slate-800/60 flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0">
               <button
                 type="button"
-                onClick={() => handleSendPresetMessage('Where is my shuttle bus?')}
+                onClick={() => handleSendPresetMessage(chatLang === 'ar' ? 'أين الأتوبيس الخاص بي؟' : 'Where is my shuttle bus?')}
                 className="px-3 py-1.5 rounded-full text-xs font-medium bg-slate-800/90 hover:bg-pink-500/20 text-slate-300 hover:text-pink-300 border border-slate-700/80 hover:border-pink-500/40 whitespace-nowrap transition-all active:scale-95 shrink-0 cursor-pointer"
               >
-                🚌 Where is my bus?
+                {chatLang === 'ar' ? '🚌 أين الأتوبيس؟' : '🚌 Where is my bus?'}
               </button>
               <button
                 type="button"
-                onClick={() => handleSendPresetMessage('I missed my shuttle bus!')}
+                onClick={() => handleSendPresetMessage(chatLang === 'ar' ? 'فاتني الأتوبيس!' : 'I missed my shuttle bus!')}
                 className="px-3 py-1.5 rounded-full text-xs font-medium bg-slate-800/90 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 border border-slate-700/80 hover:border-rose-500/40 whitespace-nowrap transition-all active:scale-95 shrink-0 cursor-pointer"
               >
-                ⚠️ Missed my shuttle
+                {chatLang === 'ar' ? '⚠️ فاتني الأتوبيس!' : '⚠️ Missed my shuttle'}
               </button>
               <button
                 type="button"
-                onClick={() => handleSendPresetMessage('I want to report an issue (AC, Driver, Delay, Lost Item).')}
+                onClick={() => handleSendPresetMessage(chatLang === 'ar' ? 'أريد الإبلاغ عن مشكلة (تكييف، سائق، تأخير، مفقودات)' : 'I want to report an issue (AC, Driver, Delay, Lost Item).')}
                 className="px-3 py-1.5 rounded-full text-xs font-medium bg-slate-800/90 hover:bg-amber-500/20 text-slate-300 hover:text-amber-300 border border-slate-700/80 hover:border-amber-500/40 whitespace-nowrap transition-all active:scale-95 shrink-0 cursor-pointer"
               >
-                💬 Report an issue
+                {chatLang === 'ar' ? '💬 الإبلاغ عن مشكلة' : '💬 Report an issue'}
               </button>
               <button
                 type="button"
-                onClick={() => handleSendPresetMessage('Is the shuttle delayed?')}
+                onClick={() => handleSendPresetMessage(chatLang === 'ar' ? 'هل الرحلة متأخرة؟' : 'Is the shuttle delayed?')}
                 className="px-3 py-1.5 rounded-full text-xs font-medium bg-slate-800/90 hover:bg-cyan-500/20 text-slate-300 hover:text-cyan-300 border border-slate-700/80 hover:border-cyan-500/40 whitespace-nowrap transition-all active:scale-95 shrink-0 cursor-pointer"
               >
-                ⏰ Trip delay?
+                {chatLang === 'ar' ? '⏰ تأخير الرحلة؟' : '⏰ Trip delay?'}
               </button>
             </div>
 
@@ -774,7 +898,7 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
                   type="text"
                   value={inputMsg}
                   onChange={(e) => setInputMsg(e.target.value)}
-                  placeholder="Ask about your bus, route, or timing..."
+                  placeholder={chatLang === 'ar' ? 'اكتب استفسارك عن الأتوبيس، الخط، أو المواعيد...' : 'Ask about your bus, route, or timing...'}
                   className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-base sm:text-xs text-white placeholder-slate-500 focus:outline-none focus:border-pink-500"
                 />
                 <button
@@ -784,7 +908,7 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
                   title="Send message"
                   aria-label="Send message"
                 >
-                  <Send className="w-4 h-4" />
+                  <Send className={`w-4 h-4 ${chatLang === 'ar' ? 'rotate-180' : ''}`} />
                 </button>
               </div>
             </form>

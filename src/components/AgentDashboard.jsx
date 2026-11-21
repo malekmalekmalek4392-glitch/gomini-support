@@ -15,12 +15,16 @@ import {
   LogOut,
   ArrowLeft,
   Info,
-  X
+  X,
+  Languages,
+  Bell,
+  AlertTriangle
 } from 'lucide-react';
 
 export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNameProp }) {
   const [agentName, setAgentName] = useState(() => agentNameProp || localStorage.getItem('gomini_agent_name') || 'Agent');
   const [agentId, setAgentId] = useState(() => localStorage.getItem('gomini_agent_id') || '00000000-0000-0000-0000-000000000001');
+  const [agentLang, setAgentLang] = useState(() => localStorage.getItem('gomini_agent_lang') || localStorage.getItem('gomini_chat_lang') || 'en');
 
   const [activeTab, setActiveTab] = useState('unassigned'); // 'unassigned', 'mine', 'resolved'
   const [conversations, setConversations] = useState([]);
@@ -32,6 +36,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
   const [claiming, setClaiming] = useState(false);
   const [relatedTrip, setRelatedTrip] = useState(null);
   const [showRiderInfo, setShowRiderInfo] = useState(false);
+  const [newTicketNotification, setNewTicketNotification] = useState(null);
 
   const msgScrollRef = useRef(null);
 
@@ -45,15 +50,52 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
       });
   }, []);
 
-  // Load Conversations
+  // Synthesize clean audio bell chime with Web Audio API (Zero external assets required)
+  const playNotificationChime = () => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+
+      const osc1 = ctx.createOscillator();
+      const gain1 = ctx.createGain();
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(659.25, now); // E5
+      gain1.gain.setValueAtTime(0.35, now);
+      gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+      osc1.connect(gain1);
+      gain1.connect(ctx.destination);
+      osc1.start(now);
+      osc1.stop(now + 0.35);
+
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(880, now + 0.15); // A5
+      gain2.gain.setValueAtTime(0.4, now + 0.15);
+      gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.start(now + 0.15);
+      osc2.stop(now + 0.55);
+    } catch (err) {
+      console.warn('Audio chime error:', err);
+    }
+  };
+
+  // Load Conversations according to strict assignment & status
   const fetchConversations = async () => {
     let query = supabase.from('conversations').select('*').order('last_message_at', { ascending: false });
 
     if (activeTab === 'unassigned') {
-      query = query.is('assigned_agent_id', null).eq('status', 'open');
+      // Any ticket not assigned to any agent and not resolved
+      query = query.is('assigned_agent_id', null).neq('status', 'resolved');
     } else if (activeTab === 'mine') {
-      query = query.eq('assigned_agent_id', agentId).in('status', ['open', 'pending']);
+      // Strictly assigned to THIS agent only, active
+      query = query.eq('assigned_agent_id', agentId).neq('status', 'resolved');
     } else if (activeTab === 'resolved') {
+      // Resolved history
       query = query.eq('status', 'resolved');
     }
 
@@ -64,11 +106,54 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
   useEffect(() => {
     fetchConversations();
 
-    // Realtime listener for new tickets
+    // Ask for browser notification permission once
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+      try {
+        Notification.requestPermission();
+      } catch (e) {}
+    }
+
+    // Realtime listener for new incoming tickets and status updates
     const channel = supabase
-      .channel('agent_convs')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'conversations' }, () => {
+      .channel('agent_convs_channel')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'conversations' }, (payload) => {
         fetchConversations();
+
+        if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+          const conv = payload.new;
+          const isUnassigned = !conv.assigned_agent_id && conv.status !== 'resolved';
+          const needsAgent = conv.category === 'needs_agent' || conv.category === 'issue' || conv.category === 'missed_bus';
+
+          // ONLY trigger chime & popup notification when chatbot CANNOT answer automatically!
+          if (isUnassigned && needsAgent) {
+            playNotificationChime();
+            setNewTicketNotification({
+              id: conv.id,
+              name: conv.passenger_name || 'Passenger',
+              route: conv.route || 'GoMini Route',
+              eid: conv.employee_id,
+              message: conv.last_message || 'Awaiting agent support',
+              rawConv: conv
+            });
+
+            if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+              try {
+                new Notification('GoMini Dispatch: Unassigned Request', {
+                  body: `${conv.passenger_name} (${conv.route}): ${conv.last_message}`,
+                  icon: '/app-icon.png'
+                });
+              } catch (e) {}
+            }
+          }
+
+          // If this ticket is currently open in active view, sync its assignment
+          setSelectedConv((prev) => {
+            if (prev && prev.id === conv.id) {
+              return { ...prev, ...conv };
+            }
+            return prev;
+          });
+        }
       })
       .subscribe();
 
@@ -135,23 +220,47 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     };
   }, [selectedConv?.id]);
 
-  // Claim Ticket (Atomic)
+  // Claim Ticket (Atomic with direct fallback)
   const handleClaimTicket = async () => {
     if (!selectedConv || claiming) return;
     setClaiming(true);
 
     try {
-      const { data, error } = await supabase.rpc('claim_ticket', {
-        ticket_id: selectedConv.id,
-        agent_id: agentId,
-        agent_name: agentName
-      });
+      let success = false;
+      try {
+        const { data, error } = await supabase.rpc('claim_ticket', {
+          ticket_id: selectedConv.id,
+          agent_id: agentId,
+          agent_name: agentName
+        });
+        if (!error && data?.success) success = true;
+      } catch (rpcErr) {
+        // Continue to direct update fallback
+      }
 
-      if (!error && data?.success) {
-        setSelectedConv((prev) => ({ ...prev, assigned_agent_id: agentId, assigned_agent_name: agentName }));
+      if (!success) {
+        const { error: updErr } = await supabase
+          .from('conversations')
+          .update({
+            assigned_agent_id: agentId,
+            assigned_agent_name: agentName,
+            status: 'open',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', selectedConv.id);
+        if (!updErr) success = true;
+      }
+
+      if (success) {
+        setSelectedConv((prev) => ({
+          ...prev,
+          assigned_agent_id: agentId,
+          assigned_agent_name: agentName,
+          status: 'open'
+        }));
         fetchConversations();
       } else {
-        alert(data?.message || 'Could not claim ticket.');
+        alert(agentLang === 'ar' ? 'تعذر استلام التذكرة أو تم استلامها بالفعل.' : 'Could not claim ticket.');
       }
     } catch (e) {
       console.error(e);
@@ -165,7 +274,10 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     if (!selectedConv) return;
     await supabase
       .from('conversations')
-      .update({ status: 'resolved', resolved_at: new Date().toISOString() })
+      .update({
+        status: 'resolved',
+        resolved_at: new Date().toISOString()
+      })
       .eq('id', selectedConv.id);
 
     await supabase.from('messages').insert({
@@ -183,6 +295,12 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
   const handleSendAgentMessage = async (e) => {
     e?.preventDefault();
     if (!inputMsg.trim() || !selectedConv) return;
+
+    // Enforce claiming check before sending
+    if (selectedConv.assigned_agent_id && selectedConv.assigned_agent_id !== agentId) {
+      alert(agentLang === 'ar' ? 'هذه التذكرة مستلمة بواسطة موظف آخر.' : 'This ticket is claimed by another agent.');
+      return;
+    }
 
     const body = inputMsg.trim();
     setInputMsg('');
@@ -284,8 +402,59 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     </div>
   );
 
+  const isClaimedByMe = selectedConv?.assigned_agent_id === agentId;
+  const isClaimedByOther = selectedConv?.assigned_agent_id && selectedConv.assigned_agent_id !== agentId;
+  const isUnassigned = selectedConv && !selectedConv.assigned_agent_id;
+  const isResolved = selectedConv?.status === 'resolved';
+
   return (
-    <div className="h-[100dvh] bg-slate-950 flex flex-col overflow-hidden text-slate-100">
+    <div
+      dir={agentLang === 'ar' ? 'rtl' : 'ltr'}
+      className="h-[100dvh] bg-slate-950 flex flex-col overflow-hidden text-slate-100"
+    >
+      {/* Realtime Alert Banner for Unassigned Customer Needing Human Agent */}
+      {newTicketNotification && (
+        <div className="fixed top-16 right-4 left-4 sm:left-auto sm:w-96 z-50 bg-gradient-to-r from-purple-900 to-indigo-900 border-2 border-purple-500 rounded-2xl p-3.5 shadow-2xl flex items-center justify-between gap-3 animate-in slide-in-from-top duration-300">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="h-9 w-9 rounded-xl bg-purple-500/30 flex items-center justify-center text-purple-300 shrink-0">
+              <Bell className="w-5 h-5 animate-bounce" />
+            </div>
+            <div className="min-w-0 text-xs">
+              <p className="font-bold text-white truncate">
+                {agentLang === 'ar' ? 'طلب جديد ينتظر الاستلام!' : 'New Customer Waiting!'}
+              </p>
+              <p className="text-purple-200 truncate">
+                {newTicketNotification.name} ({newTicketNotification.route})
+              </p>
+              <p className="text-[11px] text-slate-300 truncate mt-0.5 opacity-90">
+                "{newTicketNotification.message}"
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={() => {
+                setActiveTab('unassigned');
+                if (newTicketNotification.rawConv) {
+                  handleSelectConversation(newTicketNotification.rawConv);
+                }
+                setNewTicketNotification(null);
+              }}
+              className="px-2.5 py-1.5 rounded-lg bg-purple-500 hover:bg-purple-600 text-white font-bold text-xs transition-all cursor-pointer shadow-md"
+            >
+              {agentLang === 'ar' ? 'عرض' : 'View'}
+            </button>
+            <button
+              onClick={() => setNewTicketNotification(null)}
+              className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/10"
+              title="Dismiss"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Top Navbar with Safe Area Support for iPhone / Mobile */}
       <header
         className="bg-slate-900 border-b border-slate-800 px-3 sm:px-6 flex items-center justify-between flex-shrink-0 z-10"
@@ -305,16 +474,33 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
           />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="font-bold text-xs sm:text-sm text-white truncate">Agent Workspace</span>
+              <span className="font-bold text-xs sm:text-sm text-white truncate">
+                {agentLang === 'ar' ? 'مساحة عمل خدمة العملاء' : 'Agent Workspace'}
+              </span>
               <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded-full font-bold flex items-center gap-1 shrink-0">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span className="hidden xs:inline">Online</span>
+                <span className="hidden xs:inline">{agentLang === 'ar' ? 'متصل' : 'Online'}</span>
               </span>
             </div>
           </div>
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {/* Language Switcher AR / EN */}
+          <button
+            type="button"
+            onClick={() => {
+              const next = agentLang === 'en' ? 'ar' : 'en';
+              setAgentLang(next);
+              localStorage.setItem('gomini_agent_lang', next);
+            }}
+            className="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-slate-950 hover:bg-slate-800 text-cyan-400 hover:text-cyan-300 border border-slate-800 transition-all flex items-center gap-1 cursor-pointer shrink-0 active:scale-95"
+            title={agentLang === 'en' ? 'التبديل إلى العربية' : 'Switch to English'}
+          >
+            <Languages className="w-3.5 h-3.5" />
+            <span>{agentLang === 'en' ? 'عربي' : 'EN'}</span>
+          </button>
+
           {/* Agent Name Badge */}
           <div className="flex items-center gap-1.5 bg-slate-950 px-2 sm:px-3 py-1.5 rounded-xl border border-slate-800 text-xs">
             <User className="w-3.5 h-3.5 text-purple-400 shrink-0" />
@@ -330,7 +516,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
             />
           </div>
 
-          {/* Prominent Sign Out Button - Always visible on mobile */}
+          {/* Prominent Sign Out Button */}
           <button
             onClick={onSignOut || onSwitchToPassenger}
             className="text-xs font-bold text-rose-300 hover:text-rose-100 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 px-2.5 sm:px-3 py-1.5 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shrink-0 active:scale-95"
@@ -338,7 +524,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
             aria-label="Sign Out"
           >
             <LogOut className="w-3.5 h-3.5" />
-            <span className="hidden xs:inline">Sign Out</span>
+            <span className="hidden xs:inline">{agentLang === 'ar' ? 'خروج' : 'Sign Out'}</span>
           </button>
         </div>
       </header>
@@ -359,7 +545,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
                 activeTab === 'unassigned' ? 'bg-pink-500 text-white shadow-sm' : 'text-slate-400 hover:text-white'
               }`}
             >
-              Unassigned
+              {agentLang === 'ar' ? 'غير مسند' : 'Unassigned'}
             </button>
             <button
               onClick={() => setActiveTab('mine')}
@@ -367,7 +553,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
                 activeTab === 'mine' ? 'bg-purple-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
               }`}
             >
-              My Tickets
+              {agentLang === 'ar' ? 'تذاكري' : 'My Tickets'}
             </button>
             <button
               onClick={() => setActiveTab('resolved')}
@@ -375,7 +561,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
                 activeTab === 'resolved' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-white'
               }`}
             >
-              Resolved
+              {agentLang === 'ar' ? 'تم الحل' : 'Resolved'}
             </button>
           </div>
 
@@ -383,7 +569,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
           <div className="flex-1 overflow-y-auto divide-y divide-slate-900">
             {conversations.length === 0 ? (
               <div className="p-8 text-center text-xs text-slate-500">
-                No tickets in this queue.
+                {agentLang === 'ar' ? 'لا توجد تذاكر في هذا القسم حالياً.' : 'No tickets in this queue.'}
               </div>
             ) : (
               conversations.map((c) => {
@@ -446,8 +632,8 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
                     title="Back to Tickets Queue"
                     aria-label="Back to Tickets Queue"
                   >
-                    <ArrowLeft className="w-4 h-4 text-slate-200" />
-                    <span className="hidden xs:inline">Queue</span>
+                    <ArrowLeft className={`w-4 h-4 text-slate-200 ${agentLang === 'ar' ? 'rotate-180' : ''}`} />
+                    <span className="hidden xs:inline">{agentLang === 'ar' ? 'القائمة' : 'Queue'}</span>
                   </button>
                   <div className="min-w-0">
                     <h3 className="text-xs sm:text-sm font-bold text-white flex items-center gap-1.5 truncate">
@@ -470,23 +656,41 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
                     <Info className="w-4 h-4" />
                   </button>
 
-                  {!selectedConv.assigned_agent_id && (
+                  {/* Claim Button if unassigned */}
+                  {isUnassigned && (
                     <button
                       onClick={handleClaimTicket}
                       disabled={claiming}
                       className="px-2.5 sm:px-3.5 py-1.5 rounded-xl font-bold text-xs bg-purple-600 hover:bg-purple-500 text-white shadow-md shadow-purple-600/20 transition-all shrink-0 cursor-pointer"
                     >
-                      {claiming ? 'Claiming...' : 'Claim'}
+                      {claiming
+                        ? (agentLang === 'ar' ? 'جاري الاستلام...' : 'Claiming...')
+                        : (agentLang === 'ar' ? 'استلام التذكرة' : 'Claim')}
                     </button>
                   )}
 
-                  {selectedConv.status !== 'resolved' && (
+                  {/* Status Badge if Claimed by Other */}
+                  {isClaimedByOther && (
+                    <span className="px-2.5 py-1 rounded-xl text-[11px] font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                      {agentLang === 'ar' ? `مستلمة: ${selectedConv.assigned_agent_name}` : `Claimed: ${selectedConv.assigned_agent_name}`}
+                    </span>
+                  )}
+
+                  {/* Status Badge if Claimed by Me */}
+                  {isClaimedByMe && !isResolved && (
+                    <span className="hidden sm:inline px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                      {agentLang === 'ar' ? 'مسندة إليك' : 'Claimed by you'}
+                    </span>
+                  )}
+
+                  {/* Resolve Button (Only available to the claiming agent) */}
+                  {isClaimedByMe && !isResolved && (
                     <button
                       onClick={handleResolveTicket}
                       className="px-2.5 sm:px-3 py-1.5 rounded-xl font-bold text-xs bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/30 transition-all flex items-center gap-1 shrink-0 cursor-pointer"
                     >
                       <CheckCircle className="w-3.5 h-3.5" />
-                      <span className="hidden xs:inline">Resolve</span>
+                      <span className="hidden xs:inline">{agentLang === 'ar' ? 'تم الحل' : 'Resolve'}</span>
                     </button>
                   )}
                 </div>
@@ -515,7 +719,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
                         {isAgent ? `🧑‍💼 You (${m.sender_name})` : isBot ? '🤖 Bot Auto-Answer' : `👤 ${m.sender_name}`}
                       </div>
                       <div
-                        className={`max-w-[85%] sm:max-w-[70%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-sm ${
+                        className={`max-w-[85%] sm:max-w-[70%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-sm whitespace-pre-line ${
                           isAgent
                             ? 'bg-purple-600 text-white rounded-tr-none'
                             : isBot
@@ -550,44 +754,105 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
                 </div>
               )}
 
-              {/* Message Input with Safe-area Bottom Inset */}
-              <form
-                onSubmit={handleSendAgentMessage}
-                className="p-3 sm:p-4 bg-slate-900/90 border-t border-slate-800 flex items-center gap-2 shrink-0"
-                style={{
-                  paddingBottom: 'max(env(safe-area-inset-bottom, 0px) + 8px, 14px)'
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => setShowCanned(!showCanned)}
-                  className="px-2.5 sm:px-3 py-2.5 rounded-xl text-xs font-bold bg-slate-950 border border-slate-800 text-purple-300 hover:border-purple-500/40 shrink-0 cursor-pointer"
-                  title="Canned responses shortcut"
+              {/* Action Bottom Section depending on Ticket Assignment State */}
+              {isResolved ? (
+                <div
+                  className="p-4 bg-slate-900 border-t border-slate-800 flex items-center justify-center gap-2 text-xs text-emerald-400 shrink-0 text-center"
+                  style={{
+                    paddingBottom: 'max(env(safe-area-inset-bottom, 0px) + 8px, 14px)'
+                  }}
                 >
-                  ⚡ <span className="hidden sm:inline">/Canned</span>
-                </button>
-                <input
-                  type="text"
-                  value={inputMsg}
-                  onChange={(e) => setInputMsg(e.target.value)}
-                  placeholder="Type a response to the rider..."
-                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 sm:px-4 py-2.5 text-base sm:text-xs text-white focus:outline-none focus:border-purple-500 min-w-0"
-                />
-                <button
-                  type="submit"
-                  disabled={!inputMsg.trim()}
-                  className="h-10 px-3 sm:px-4 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-purple-600/20 shrink-0 cursor-pointer active:scale-95"
+                  <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>
+                    {agentLang === 'ar'
+                      ? 'تم حل هذه التذكرة. إذا أرسل الراكب رسالة جديدة ستظهر تلقائياً في قائمة غير المسند.'
+                      : 'Ticket resolved. If the customer messages again, it will reopen in the Unassigned queue.'}
+                  </span>
+                </div>
+              ) : isUnassigned ? (
+                <div
+                  className="p-3 sm:p-4 bg-slate-900/95 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0"
+                  style={{
+                    paddingBottom: 'max(env(safe-area-inset-bottom, 0px) + 8px, 14px)'
+                  }}
                 >
-                  <Send className="w-3.5 h-3.5" />
-                  <span className="hidden xs:inline">Send</span>
-                </button>
-              </form>
+                  <div className="flex items-center gap-2 text-xs text-amber-300 font-medium">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span>
+                      {agentLang === 'ar'
+                        ? 'هذه التذكرة غير مسندة. يجب استلام التذكرة أولاً للرد ومنع تكرار المراسلة.'
+                        : 'This ticket is unassigned. Claim it to respond and prevent double texting.'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleClaimTicket}
+                    disabled={claiming}
+                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl font-bold text-xs bg-purple-600 hover:bg-purple-500 text-white shadow-lg shadow-purple-600/30 transition-all cursor-pointer shrink-0 active:scale-95"
+                  >
+                    {claiming
+                      ? (agentLang === 'ar' ? 'جاري الاستلام...' : 'Claiming...')
+                      : (agentLang === 'ar' ? '⚡ استلام التذكرة للرد' : '⚡ Claim Ticket to Reply')}
+                  </button>
+                </div>
+              ) : isClaimedByOther ? (
+                <div
+                  className="p-4 bg-slate-900/95 border-t border-slate-800 flex items-center justify-center gap-2 text-xs text-slate-400 shrink-0 text-center"
+                  style={{
+                    paddingBottom: 'max(env(safe-area-inset-bottom, 0px) + 8px, 14px)'
+                  }}
+                >
+                  <ShieldCheck className="w-4 h-4 text-purple-400 shrink-0" />
+                  <span>
+                    {agentLang === 'ar'
+                      ? `تم استلام هذه التذكرة بواسطة (${selectedConv.assigned_agent_name || 'موظف آخر'}). مغلقة لمنع تكرار الرد.`
+                      : `This ticket is claimed by ${selectedConv.assigned_agent_name || 'another agent'}. Locked to prevent duplicate responses.`}
+                  </span>
+                </div>
+              ) : (
+                /* Claimed by Me: Active Texting Input */
+                <form
+                  onSubmit={handleSendAgentMessage}
+                  className="p-3 sm:p-4 bg-slate-900/90 border-t border-slate-800 flex items-center gap-2 shrink-0"
+                  style={{
+                    paddingBottom: 'max(env(safe-area-inset-bottom, 0px) + 8px, 14px)'
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setShowCanned(!showCanned)}
+                    className="px-2.5 sm:px-3 py-2.5 rounded-xl text-xs font-bold bg-slate-950 border border-slate-800 text-purple-300 hover:border-purple-500/40 shrink-0 cursor-pointer"
+                    title="Canned responses shortcut"
+                  >
+                    ⚡ <span className="hidden sm:inline">{agentLang === 'ar' ? 'ردود جاهزة' : '/Canned'}</span>
+                  </button>
+                  <input
+                    type="text"
+                    value={inputMsg}
+                    onChange={(e) => setInputMsg(e.target.value)}
+                    placeholder={agentLang === 'ar' ? 'اكتب ردك للراكب...' : 'Type a response to the rider...'}
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 sm:px-4 py-2.5 text-base sm:text-xs text-white focus:outline-none focus:border-purple-500 min-w-0"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!inputMsg.trim()}
+                    className="h-10 px-3 sm:px-4 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-purple-600/20 shrink-0 cursor-pointer active:scale-95"
+                  >
+                    <Send className={`w-3.5 h-3.5 ${agentLang === 'ar' ? 'rotate-180' : ''}`} />
+                    <span className="hidden xs:inline">{agentLang === 'ar' ? 'إرسال' : 'Send'}</span>
+                  </button>
+                </form>
+              )}
             </>
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center text-slate-500 text-xs p-6 text-center">
               <MessageSquare className="w-12 h-12 text-slate-700 mb-3 stroke-[1.2]" />
-              <p className="font-bold text-slate-400">Select a ticket from the left queue</p>
-              <p className="text-slate-600 mt-1">Live incoming requests will update in real-time</p>
+              <p className="font-bold text-slate-400">
+                {agentLang === 'ar' ? 'اختر تذكرة من القائمة' : 'Select a ticket from the left queue'}
+              </p>
+              <p className="text-slate-600 mt-1">
+                {agentLang === 'ar' ? 'سيتم تحديث الطلبات الواردة مباشرة فور وصولها' : 'Live incoming requests will update in real-time'}
+              </p>
             </div>
           )}
         </main>
@@ -615,7 +880,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
             >
               <div className="flex items-center justify-between border-b border-slate-800 pb-3">
                 <h4 className="text-sm font-bold text-white flex items-center gap-2">
-                  <span>Passenger & Route Info</span>
+                  <span>{agentLang === 'ar' ? 'تفاصيل الراكب والرحلة' : 'Passenger & Route Info'}</span>
                 </h4>
                 <button
                   type="button"
