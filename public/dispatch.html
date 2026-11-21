@@ -362,6 +362,23 @@
           this.loading = false;
         },
 
+                extractDayNum(d) {
+          const match = String(d).match(/\d+/);
+          return match ? parseInt(match[0], 10) : 999;
+        },
+
+        getShiftForDay(row, dayName) {
+          if (!row || !dayName) return '';
+          if (row[dayName]) return row[dayName];
+          const cleanTarget = String(dayName).replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+          for (const k of Object.keys(row)) {
+            if (String(k).replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === cleanTarget) {
+              return row[k];
+            }
+          }
+          return '';
+        },
+
         async loadFromSupabase() {
           console.log('[Dispatch] Loading from Supabase...');
           try {
@@ -383,16 +400,14 @@
             const daySet = new Set();
             roster.forEach(item => {
               if (item.schedules && typeof item.schedules === 'object') {
-                Object.keys(item.schedules).forEach(d => daySet.add(d));
+                Object.keys(item.schedules).forEach(d => {
+                  if (!d.startsWith('_')) daySet.add(d);
+                });
               }
             });
 
-            const dayOrder = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-            const days = Array.from(daySet).sort((a, b) => {
-              const ia = dayOrder.findIndex(d => a.toLowerCase().includes(d.toLowerCase()));
-              const ib = dayOrder.findIndex(d => b.toLowerCase().includes(d.toLowerCase()));
-              return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
-            });
+            // Strict numerical date ordering: 16, 17, 18, 19, 20, 21, 22
+            const days = Array.from(daySet).sort((a, b) => this.extractDayNum(a) - this.extractDayNum(b));
 
             const rows = roster.map(item => {
               const cleanPhone = String(item.phone || '').replace(/^=/, '').trim();
@@ -1075,7 +1090,7 @@
 
           // 1. Trips originating on current day (dayName)
           this.data.forEach(row => {
-            const shiftVal = row[dayName];
+            const shiftVal = this.getShiftForDay(row, dayName);
             if (!shiftVal) return;
             const sv = shiftVal.trim().toUpperCase();
             if (sv === 'OFF' || sv.includes('NO TRANSPORTATION') || sv.includes('UPL') || sv.includes('PTO') || sv.includes('ANNUAL')) return;
@@ -1117,7 +1132,7 @@
 
           if (prevDay) {
             this.data.forEach(row => {
-              const shiftValPrev = row[prevDay];
+              const shiftValPrev = this.getShiftForDay(row, prevDay);
               if (!shiftValPrev) return;
               const svPrev = shiftValPrev.trim().toUpperCase();
               if (svPrev === 'OFF' || svPrev.includes('NO TRANSPORTATION') || svPrev.includes('UPL') || svPrev.includes('PTO') || svPrev.includes('ANNUAL')) return;

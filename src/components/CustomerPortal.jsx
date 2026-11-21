@@ -267,13 +267,12 @@ export default function CustomerPortal({ onSwitchToAgent }) {
     // Filter out internal metadata keys (like _gender, _dtd)
     const validDays = Object.keys(rawSched).filter(k => !k.startsWith('_'));
 
-    // Strict chronological week sorting: Saturday -> Friday
-    const dayOrder = ['saturday', 'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday'];
-    validDays.sort((a, b) => {
-      const idxA = dayOrder.findIndex(d => a.toLowerCase().includes(d));
-      const idxB = dayOrder.findIndex(d => b.toLowerCase().includes(d));
-      return (idxA === -1 ? 99 : idxA) - (idxB === -1 ? 99 : idxB);
-    });
+    // Strict numerical date ordering: 16, 17, 18, 19, 20, 21, 22
+    function extractDayNum(d) {
+      const match = String(d).match(/\d+/);
+      return match ? parseInt(match[0], 10) : 999;
+    }
+    validDays.sort((a, b) => extractDayNum(a) - extractDayNum(b));
 
     return validDays.map((day) => {
       const shiftVal = String(rawSched[day] || '').trim();
