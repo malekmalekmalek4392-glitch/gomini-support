@@ -159,7 +159,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
       } catch (e) {}
     }
 
-    // Realtime listener for new incoming tickets and status updates
+    // Realtime listener for incoming customer messages and conversation changes
     const channel = supabase
       .channel('agent_convs_channel')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'conversations' }, (payload) => {
@@ -167,29 +167,6 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
 
         if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
           const conv = payload.new;
-          const isUnassigned = !conv.assigned_agent_id && conv.status !== 'resolved';
-
-          // Trigger chime & popup notification for ANY unassigned customer request (including reopened from resolved)
-          if (isUnassigned) {
-            playNotificationChime();
-            setNewTicketNotification({
-              id: conv.id,
-              name: conv.passenger_name || 'Passenger',
-              route: conv.route || 'GoMini Route',
-              eid: conv.employee_id,
-              message: conv.last_message || 'Awaiting agent support',
-              rawConv: conv
-            });
-
-            if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-              try {
-                new Notification(agentLang === 'ar' ? 'GoMini: طلب راكب غير مسند' : 'GoMini Dispatch: Unassigned Request', {
-                  body: `${conv.passenger_name} (${conv.route}): ${conv.last_message}`,
-                  icon: '/app-icon.png'
-                });
-              } catch (e) {}
-            }
-          }
 
           // If this ticket is currently open in active view, sync its assignment or close if resolved
           setSelectedConv((prev) => {
@@ -201,6 +178,62 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
             }
             return prev;
           });
+        }
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload) => {
+        const msg = payload.new;
+        if (!msg || msg.sender_type !== 'passenger') return;
+
+        // Fetch conversation details to check assignment
+        const { data: convData } = await supabase
+          .from('conversations')
+          .select('*')
+          .eq('id', msg.conversation_id)
+          .maybeSingle();
+
+        if (convData && convData.status !== 'resolved') {
+          const isUnassigned = !convData.assigned_agent_id;
+          const isMyCustomer = convData.assigned_agent_id === agentId;
+
+          // Notify if unassigned (to all agents) OR if customer replies to THIS agent's claimed ticket!
+          if (isUnassigned || isMyCustomer) {
+            playNotificationChime();
+            setNewTicketNotification({
+              id: convData.id,
+              name: convData.passenger_name || msg.sender_name || 'Passenger',
+              route: convData.route || 'GoMini Route',
+              eid: convData.employee_id,
+              message: msg.body,
+              isMine: isMyCustomer,
+              rawConv: convData
+            });
+
+            if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+              try {
+                const title = isMyCustomer
+                  ? (agentLang === 'ar' ? `GoMini: رسالة من ${convData.passenger_name}` : `GoMini: Message from ${convData.passenger_name}`)
+                  : (agentLang === 'ar' ? 'GoMini: طلب راكب غير مسند' : 'GoMini Dispatch: Unassigned Request');
+                new Notification(title, {
+                  body: `${convData.passenger_name} (${convData.route}): ${msg.body}`,
+                  icon: '/app-icon.png'
+                });
+              } catch (e) {}
+            }
+          }
+
+          // If this ticket is currently open in active chat, append message in real time
+          setSelectedConv((prev) => {
+            if (prev && prev.id === convData.id) {
+              setMessages((prevMsgs) => {
+                if (prevMsgs.some((m) => m.id === msg.id)) return prevMsgs;
+                return [...prevMsgs, msg];
+              });
+              setTimeout(() => msgScrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+            }
+            return prev;
+          });
+
+          fetchConversations();
         }
       })
       .subscribe();
@@ -560,7 +593,9 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
             </div>
             <div className="min-w-0 text-xs">
               <p className="font-bold text-white truncate">
-                {agentLang === 'ar' ? 'طلب جديد ينتظر الاستلام!' : 'New Customer Waiting!'}
+                {newTicketNotification.isMine
+                  ? (agentLang === 'ar' ? 'رسالة جديدة من راكبك!' : 'New Message from Rider!')
+                  : (agentLang === 'ar' ? 'طلب جديد ينتظر الاستلام!' : 'New Customer Waiting!')}
               </p>
               <p className="text-purple-200 truncate">
                 {newTicketNotification.name} ({newTicketNotification.route})
@@ -573,7 +608,11 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
           <div className="flex items-center gap-1.5 shrink-0">
             <button
               onClick={() => {
-                setActiveTab('unassigned');
+                if (newTicketNotification.isMine) {
+                  setActiveTab('mine');
+                } else {
+                  setActiveTab('unassigned');
+                }
                 if (newTicketNotification.rawConv) {
                   handleSelectConversation(newTicketNotification.rawConv);
                 }

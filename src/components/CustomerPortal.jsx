@@ -224,29 +224,48 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
     }
   };
 
-  // Realtime subscription for active chat
+  // Realtime subscription for active chat & incoming agent replies
   useEffect(() => {
-    if (!conversation?.id) return;
+    if (!passenger?.employee_id) return;
 
     const channel = supabase
-      .channel('chat_msg_' + conversation.id)
+      .channel('chat_msg_pax_' + passenger.employee_id)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages' },
-        (payload) => {
-          if (payload.new && payload.new.conversation_id === conversation.id) {
+        async (payload) => {
+          const newMsg = payload.new;
+          if (!newMsg) return;
+
+          let isMatch = false;
+          if (conversation?.id && newMsg.conversation_id === conversation.id) {
+            isMatch = true;
+          } else {
+            // Check if message belongs to this employee's conversations
+            const { data: convData } = await supabase
+              .from('conversations')
+              .select('id, employee_id')
+              .eq('id', newMsg.conversation_id)
+              .maybeSingle();
+            if (convData && String(convData.employee_id) === String(passenger.employee_id)) {
+              isMatch = true;
+              if (!conversation) setConversation(convData);
+            }
+          }
+
+          if (isMatch) {
             setMessages((prev) => {
-              if (prev.some((m) => m.id === payload.new.id)) return prev;
-              return [...prev, payload.new];
+              if (prev.some((m) => m.id === newMsg.id)) return prev;
+              return [...prev, newMsg];
             });
             setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
 
-            // Trigger notification & audio chime to customer when a human support agent responds!
-            if (payload.new.sender_type === 'agent') {
+            // Trigger notification & audio chime to customer whenever an AGENT responds!
+            if (newMsg.sender_type === 'agent') {
               playCustomerChime();
               setAgentMsgNotification({
-                sender: payload.new.sender_name || (chatLang === 'ar' ? 'موظف خدمة العملاء' : 'Support Agent'),
-                text: payload.new.body
+                sender: newMsg.sender_name || (chatLang === 'ar' ? 'موظف خدمة العملاء' : 'Support Agent'),
+                text: newMsg.body
               });
 
               if (!showChat) {
@@ -256,7 +275,7 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
               if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
                 try {
                   new Notification(chatLang === 'ar' ? 'GoMini: رد جديد من الدعم' : 'GoMini Support Response', {
-                    body: `${payload.new.sender_name || 'Support'}: ${payload.new.body}`,
+                    body: `${newMsg.sender_name || 'Support'}: ${newMsg.body}`,
                     icon: '/app-icon.png'
                   });
                 } catch (e) {}
@@ -270,7 +289,7 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [conversation?.id, showChat, chatLang]);
+  }, [passenger?.employee_id, conversation?.id, showChat, chatLang]);
 
   // Scroll to latest message and clear unread notifications whenever chat drawer is opened
   useEffect(() => {
