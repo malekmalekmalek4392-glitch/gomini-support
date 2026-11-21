@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { MessageSquare, CheckCircle, Clock, AlertCircle, Send, User, ChevronRight, Phone, Bus, Filter, ShieldCheck } from 'lucide-react';
 
-export default function AgentDashboard({ onSwitchToPassenger }) {
-  const [agentName, setAgentName] = useState(() => localStorage.getItem('gomini_agent_name') || 'Agent Omar');
+export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNameProp }) {
+  const [agentName, setAgentName] = useState(() => agentNameProp || localStorage.getItem('gomini_agent_name') || 'Agent');
   const [agentId, setAgentId] = useState(() => localStorage.getItem('gomini_agent_id') || '00000000-0000-0000-0000-000000000001');
 
   const [activeTab, setActiveTab] = useState('unassigned'); // 'unassigned', 'mine', 'resolved'
@@ -222,10 +222,10 @@ export default function AgentDashboard({ onSwitchToPassenger }) {
             />
           </div>
           <button
-            onClick={onSwitchToPassenger}
-            className="text-xs font-bold text-slate-400 hover:text-white px-3 py-1.5 rounded-xl border border-slate-800 hover:border-slate-700 transition-all"
+            onClick={onSignOut || onSwitchToPassenger}
+            className="text-xs font-bold text-slate-400 hover:text-white px-3 py-1.5 rounded-xl border border-slate-800 hover:border-slate-700 transition-all cursor-pointer flex items-center gap-1.5"
           >
-            ← Passenger App
+            Sign Out
           </button>
         </div>
       </header>

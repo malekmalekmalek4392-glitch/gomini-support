@@ -54,8 +54,8 @@ function checkIsD2D(timeStr, direction) {
   }
 }
 
-export default function CustomerPortal({ onSwitchToAgent }) {
-  const [passenger, setPassenger] = useState(null);
+export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPassenger }) {
+  const [passenger, setPassenger] = useState(initialPassenger || null);
   const [searchQuery, setSearchQuery] = useState('');
   const [allRoster, setAllRoster] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -75,15 +75,19 @@ export default function CustomerPortal({ onSwitchToAgent }) {
       if (!error && data && data.length > 0) {
         setAllRoster(data);
 
-        // Saved EID or default to Abdulrahman Nawar (3367295)
-        const savedEid = localStorage.getItem('gomini_active_eid') || '3367295';
-        const match = data.find(
-          (p) => String(p.employee_id).includes(savedEid) || String(p.name).toLowerCase().includes('nawar')
-        );
-        if (match) {
-          setPassenger(match);
+        if (initialPassenger) {
+          const match = data.find(p => String(p.employee_id) === String(initialPassenger.employee_id));
+          setPassenger(match || initialPassenger);
         } else {
-          setPassenger(data[0]);
+          const savedEid = localStorage.getItem('gomini_active_eid') || '3367295';
+          const match = data.find(
+            (p) => String(p.employee_id).includes(savedEid) || String(p.phone || '').includes(savedEid) || String(p.name).toLowerCase().includes('nawar')
+          );
+          if (match) {
+            setPassenger(match);
+          } else {
+            setPassenger(data[0]);
+          }
         }
       }
     } catch (e) {
@@ -413,8 +417,8 @@ export default function CustomerPortal({ onSwitchToAgent }) {
           </div>
 
           <button
-            onClick={onSwitchToAgent}
-            className="flex items-center gap-1.5 text-xs font-bold text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 px-3 py-1.5 rounded-xl transition-all"
+            onClick={onSignOut || onSwitchToAgent}
+            className="flex items-center gap-1.5 text-xs font-bold text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 px-3 py-1.5 rounded-xl transition-all cursor-pointer"
           >
             <LogOut className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Sign Out</span>

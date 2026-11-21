@@ -610,6 +610,8 @@
           this.authError = '';
           this.currentView = 'login';
           sessionStorage.removeItem('gomini_auth');
+          localStorage.removeItem('gomini_user_role');
+          window.location.href = '/';
         },
 
         switchView(newView) {
