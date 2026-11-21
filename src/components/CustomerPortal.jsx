@@ -250,6 +250,19 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
       .channel('chat_msg_pax_' + passenger.employee_id)
       .on(
         'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'conversations'
+        },
+        (payload) => {
+          if (payload.new && String(payload.new.employee_id) === String(passenger.employee_id)) {
+            setConversation(payload.new);
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages' },
         async (payload) => {
           const newMsg = payload.new;
@@ -415,29 +428,27 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
     setInputMsg('');
 
     try {
-      let conv = conversation;
-      if (!conv) {
-        // Check if an existing conversation exists in DB for this employee
-        const { data: existing } = await supabase
-          .from('conversations')
-          .select('*')
-          .eq('employee_id', passenger.employee_id)
-          .order('id', { ascending: false })
-          .limit(1);
+      // 1. Always fetch the freshest state of this passenger's conversation directly from DB
+      let conv = null;
+      const { data: convRows } = await supabase
+        .from('conversations')
+        .select('*')
+        .eq('employee_id', passenger.employee_id)
+        .order('id', { ascending: false })
+        .limit(1);
 
-        if (existing && existing.length > 0) {
-          conv = existing[0];
-          setConversation(existing[0]);
-        }
+      if (convRows && convRows.length > 0) {
+        conv = convRows[0];
+        setConversation(convRows[0]);
       }
 
-      // Check if ticket is currently claimed and active with a human agent
+      // 2. Strict Check: Is ticket currently claimed by a human agent and not yet resolved?
       const isCurrentlyWithAgent = Boolean(
         conv?.assigned_agent_name &&
         conv?.status !== 'resolved'
       );
 
-      // Determine bot answer capability (Chatbot is completely silent if ticket is with an agent)
+      // 3. Bot intent analysis (Only when NOT currently with an agent!)
       let canBotAnswer = false;
       let intent = 'needs_agent';
       let category = 'complaint';
@@ -449,10 +460,11 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
         category = analysis.category;
       }
 
-      // If answered by bot -> status is 'resolved' so it NEVER clutters agent queues or notifies agents!
-      // If needs human agent -> status is 'open' so it enters the Unassigned queue and notifies agents!
+      // If already with agent -> strictly KEEP the ticket active with the agent (status 'open' or 'pending')
+      // If answered by bot -> status is 'resolved' so it NEVER clutters agent queues or notifies agents
+      // If needs human agent -> status is 'open' so it enters the Unassigned queue and notifies agents
       const convStatus = isCurrentlyWithAgent
-        ? 'pending'
+        ? (conv.status === 'pending' ? 'pending' : 'open')
         : (canBotAnswer ? 'resolved' : 'open');
 
       if (!conv) {
@@ -485,12 +497,15 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
         const updatePayload = {
           status: convStatus,
           last_message: body,
-          last_message_at: new Date().toISOString(),
-          category: category
+          last_message_at: new Date().toISOString()
         };
 
-        // If not with an agent, keep unassigned
-        if (!isCurrentlyWithAgent) {
+        if (isCurrentlyWithAgent) {
+          // STRICT RULE: If currently with an agent, DO NOT touch agent assignment!
+          // It stays in that agent's "My Tickets" queue and never goes to unassigned or resolved!
+        } else {
+          // If not currently with an agent:
+          updatePayload.category = category;
           updatePayload.assigned_agent_id = null;
           updatePayload.assigned_agent_name = null;
         }
