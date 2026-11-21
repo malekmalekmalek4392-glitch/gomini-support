@@ -279,8 +279,7 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
           status: 'open',
           last_message: body,
           last_message_at: new Date().toISOString(),
-          category: category,
-          updated_at: new Date().toISOString()
+          category: category
         };
 
         // If human assistance is needed or if ticket was previously resolved,

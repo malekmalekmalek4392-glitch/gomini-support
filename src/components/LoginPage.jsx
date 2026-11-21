@@ -31,7 +31,7 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
   const isAgent = staffEmail.trim().toLowerCase() === 'agent@gomini.com' || staffEmail.trim().toLowerCase().startsWith('agent');
 
   // Handle Staff Login (Admin, Executive, Agent)
-  const handleStaffSubmit = (e) => {
+  const handleStaffSubmit = async (e) => {
     e.preventDefault();
     setStaffError('');
 
@@ -97,6 +97,37 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
       sessionStorage.setItem('gomini_auth', JSON.stringify(authUser));
       localStorage.setItem('gomini_agent_name', trimmedName);
       localStorage.setItem('gomini_user_role', 'agent');
+
+      // Sync with agents table to satisfy foreign key constraint on ticket claiming
+      try {
+        const { data: existing } = await supabase
+          .from('agents')
+          .select('id')
+          .eq('email', 'agent@gomini.com')
+          .limit(1);
+
+        if (existing && existing.length > 0) {
+          localStorage.setItem('gomini_agent_id', existing[0].id);
+        } else {
+          const { data: created } = await supabase
+            .from('agents')
+            .insert({
+              full_name: trimmedName,
+              email: 'agent@gomini.com',
+              role: 'agent',
+              is_online: true
+            })
+            .select()
+            .single();
+
+          if (created) {
+            localStorage.setItem('gomini_agent_id', created.id);
+          }
+        }
+      } catch (agErr) {
+        console.warn('Agent DB sync:', agErr);
+      }
+
       setStaffLoading(false);
       onAgentLogin(trimmedName);
       return;

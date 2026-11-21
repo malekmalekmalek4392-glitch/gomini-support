@@ -22,8 +22,11 @@ import {
 } from 'lucide-react';
 
 export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNameProp }) {
-  const [agentName, setAgentName] = useState(() => agentNameProp || localStorage.getItem('gomini_agent_name') || 'Agent');
-  const [agentId, setAgentId] = useState(() => localStorage.getItem('gomini_agent_id') || '00000000-0000-0000-0000-000000000001');
+  const [agentName, setAgentName] = useState(() => agentNameProp || localStorage.getItem('gomini_agent_name') || 'Agent Support');
+  const [agentId, setAgentId] = useState(() => {
+    const saved = localStorage.getItem('gomini_agent_id');
+    return saved && saved !== '00000000-0000-0000-0000-000000000001' ? saved : 'd3737431-70c9-43ec-b330-4160d21402ca';
+  });
   const [agentLang, setAgentLang] = useState(() => localStorage.getItem('gomini_agent_lang') || localStorage.getItem('gomini_chat_lang') || 'en');
 
   const [activeTab, setActiveTab] = useState('unassigned'); // 'unassigned', 'mine', 'resolved'
@@ -49,6 +52,49 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
         if (data) setCannedResponses(data);
       });
   }, []);
+
+  // Ensure active agent is registered in `agents` table so foreign key constraint is always satisfied
+  useEffect(() => {
+    const resolveAgentIdentity = async () => {
+      try {
+        const storedId = localStorage.getItem('gomini_agent_id');
+        if (storedId) {
+          const { data: match } = await supabase.from('agents').select('id, full_name').eq('id', storedId).maybeSingle();
+          if (match) {
+            setAgentId(match.id);
+            return;
+          }
+        }
+
+        const { data: byEmail } = await supabase.from('agents').select('id, full_name').eq('email', 'agent@gomini.com').limit(1);
+        if (byEmail && byEmail.length > 0) {
+          setAgentId(byEmail[0].id);
+          localStorage.setItem('gomini_agent_id', byEmail[0].id);
+          return;
+        }
+
+        const { data: newRow } = await supabase
+          .from('agents')
+          .insert({
+            full_name: agentName || 'Agent Support',
+            email: 'agent@gomini.com',
+            role: 'agent',
+            is_online: true
+          })
+          .select()
+          .single();
+
+        if (newRow) {
+          setAgentId(newRow.id);
+          localStorage.setItem('gomini_agent_id', newRow.id);
+        }
+      } catch (e) {
+        console.warn('Agent identity resolution warning:', e);
+      }
+    };
+
+    resolveAgentIdentity();
+  }, [agentName]);
 
   // Synthesize clean audio bell chime with Web Audio API (Zero external assets required)
   const playNotificationChime = () => {
@@ -220,50 +266,92 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     };
   }, [selectedConv?.id]);
 
+  // Resolve guaranteed valid agent ID from DB or existing record
+  const getValidAgentId = async () => {
+    let currentId = agentId;
+    if (!currentId || currentId === '00000000-0000-0000-0000-000000000001') {
+      const stored = localStorage.getItem('gomini_agent_id');
+      if (stored && stored !== '00000000-0000-0000-0000-000000000001') {
+        currentId = stored;
+      }
+    }
+
+    if (currentId && currentId !== '00000000-0000-0000-0000-000000000001') {
+      const { data: match } = await supabase.from('agents').select('id').eq('id', currentId).maybeSingle();
+      if (match?.id) {
+        setAgentId(match.id);
+        return match.id;
+      }
+    }
+
+    const { data: byEmail } = await supabase.from('agents').select('id').eq('email', 'agent@gomini.com').limit(1);
+    if (byEmail && byEmail.length > 0) {
+      setAgentId(byEmail[0].id);
+      localStorage.setItem('gomini_agent_id', byEmail[0].id);
+      return byEmail[0].id;
+    }
+
+    const fallbackId = 'd3737431-70c9-43ec-b330-4160d21402ca';
+    setAgentId(fallbackId);
+    localStorage.setItem('gomini_agent_id', fallbackId);
+    return fallbackId;
+  };
+
   // Claim Ticket (Atomic with direct fallback)
   const handleClaimTicket = async () => {
     if (!selectedConv || claiming) return;
     setClaiming(true);
 
     try {
+      const resolvedId = await getValidAgentId();
       let success = false;
+
+      // 1. Try atomic claim_ticket RPC
       try {
         const { data, error } = await supabase.rpc('claim_ticket', {
           ticket_id: selectedConv.id,
-          agent_id: agentId,
-          agent_name: agentName
+          agent_id: resolvedId,
+          agent_name: agentName || 'Agent Support'
         });
-        if (!error && data?.success) success = true;
+        if (!error && (data?.success || data === true)) {
+          success = true;
+        }
       } catch (rpcErr) {
-        // Continue to direct update fallback
+        console.warn('RPC claim_ticket failed, falling back to direct update:', rpcErr);
       }
 
+      // 2. Direct update fallback (NO updated_at column in conversations schema)
       if (!success) {
         const { error: updErr } = await supabase
           .from('conversations')
           .update({
-            assigned_agent_id: agentId,
-            assigned_agent_name: agentName,
-            status: 'open',
-            updated_at: new Date().toISOString()
+            assigned_agent_id: resolvedId,
+            assigned_agent_name: agentName || 'Agent Support',
+            status: 'open'
           })
           .eq('id', selectedConv.id);
-        if (!updErr) success = true;
+
+        if (!updErr) {
+          success = true;
+        } else {
+          console.error('Direct claim update error:', updErr);
+        }
       }
 
       if (success) {
         setSelectedConv((prev) => ({
           ...prev,
-          assigned_agent_id: agentId,
-          assigned_agent_name: agentName,
+          assigned_agent_id: resolvedId,
+          assigned_agent_name: agentName || 'Agent Support',
           status: 'open'
         }));
-        fetchConversations();
+        await fetchConversations();
       } else {
-        alert(agentLang === 'ar' ? 'تعذر استلام التذكرة أو تم استلامها بالفعل.' : 'Could not claim ticket.');
+        alert(agentLang === 'ar' ? 'تعذر استلام التذكرة أو تم استلامها بالفعل بواسطة موظف آخر.' : 'Could not claim ticket. It may already be assigned.');
       }
     } catch (e) {
-      console.error(e);
+      console.error('Ticket claim failure:', e);
+      alert(agentLang === 'ar' ? 'حدث خطأ أثناء استلام التذكرة.' : 'An error occurred while claiming ticket.');
     } finally {
       setClaiming(false);
     }
