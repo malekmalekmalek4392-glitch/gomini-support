@@ -1,6 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { MessageSquare, CheckCircle, Clock, AlertCircle, Send, User, ChevronRight, Phone, Bus, Filter, ShieldCheck } from 'lucide-react';
+import {
+  MessageSquare,
+  CheckCircle,
+  Clock,
+  AlertCircle,
+  Send,
+  User,
+  ChevronRight,
+  Phone,
+  Bus,
+  Filter,
+  ShieldCheck,
+  LogOut,
+  ArrowLeft,
+  Info,
+  X
+} from 'lucide-react';
 
 export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNameProp }) {
   const [agentName, setAgentName] = useState(() => agentNameProp || localStorage.getItem('gomini_agent_name') || 'Agent');
@@ -15,6 +31,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
   const [showCanned, setShowCanned] = useState(false);
   const [claiming, setClaiming] = useState(false);
   const [relatedTrip, setRelatedTrip] = useState(null);
+  const [showRiderInfo, setShowRiderInfo] = useState(false);
 
   const msgScrollRef = useRef(null);
 
@@ -193,24 +210,114 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     setShowCanned(false);
   };
 
-  return (
-    <div className="h-screen bg-slate-950 flex flex-col overflow-hidden text-slate-100">
-      {/* Top Navbar */}
-      <header className="h-14 bg-slate-900 border-b border-slate-800 px-6 flex items-center justify-between flex-shrink-0 z-10">
-        <div className="flex items-center gap-3">
-          <div className="h-8 w-8 rounded-xl bg-purple-600 flex items-center justify-center font-bold text-xs text-white">
-            QA
+  const renderPassengerProfile = () => (
+    <div>
+      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Passenger Profile</h4>
+      <div className="bg-slate-900/60 p-4 rounded-2xl border border-slate-800 space-y-2 text-xs">
+        <div>
+          <div className="text-slate-500 text-[11px]">Employee Name</div>
+          <div className="font-bold text-white text-sm">{selectedConv?.passenger_name}</div>
+        </div>
+        <div>
+          <div className="text-slate-500 text-[11px]">TaskUs EID</div>
+          <div className="font-mono text-cyan-400 font-bold">{selectedConv?.employee_id}</div>
+        </div>
+        <div>
+          <div className="text-slate-500 text-[11px]">Assigned Route</div>
+          <div className="text-purple-300 font-bold">{selectedConv?.route}</div>
+        </div>
+        {selectedConv?.passenger_phone && (
+          <div>
+            <div className="text-slate-500 text-[11px]">Phone</div>
+            <a href={`tel:${selectedConv.passenger_phone}`} className="text-emerald-400 font-mono hover:underline">
+              {selectedConv.passenger_phone}
+            </a>
           </div>
-          <span className="font-bold text-sm text-white">GoMini Agent Workspace</span>
-          <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-            Online
-          </span>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderDispatchAssignment = () => (
+    <div>
+      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Live Dispatch Assignment</h4>
+      {relatedTrip ? (
+        <div className="bg-gradient-to-br from-slate-900 to-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3 text-xs shadow-md">
+          <div className="flex items-center justify-between">
+            <span className="px-2.5 py-0.5 rounded-lg text-xs font-black font-mono bg-purple-500/20 text-purple-300 border border-purple-500/40">
+              {relatedTrip.vehicle_code}
+            </span>
+            <span className="text-[10px] font-bold text-slate-400">{relatedTrip.vehicle_type}</span>
+          </div>
+
+          <div className="space-y-1 text-slate-300">
+            <div className="flex justify-between">
+              <span className="text-slate-500">Shift Time:</span>
+              <span className="font-bold text-white">{relatedTrip.shift_time}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-500">Pickup Start:</span>
+              <span className="font-bold text-cyan-400">{relatedTrip.trip_time || relatedTrip.shift_time}</span>
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-slate-800 flex justify-between items-center">
+            <div>
+              <div className="text-[10px] text-slate-500">Driver</div>
+              <div className="font-bold text-white text-xs">{relatedTrip.captain_name || 'Assigned'}</div>
+            </div>
+            {relatedTrip.captain_phone && (
+              <a
+                href={`tel:${relatedTrip.captain_phone}`}
+                className="p-2 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30"
+              >
+                <Phone className="w-3.5 h-3.5" />
+              </a>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="p-4 rounded-2xl border border-slate-800/80 bg-slate-900/30 text-center text-xs text-slate-500">
+          No active trip data pushed yet from Google Sheets.
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="h-[100dvh] bg-slate-950 flex flex-col overflow-hidden text-slate-100">
+      {/* Top Navbar with Safe Area Support for iPhone / Mobile */}
+      <header
+        className="bg-slate-900 border-b border-slate-800 px-3 sm:px-6 flex items-center justify-between flex-shrink-0 z-10"
+        style={{
+          paddingTop: 'max(env(safe-area-inset-top, 0px) + 6px, 12px)',
+          paddingBottom: '10px'
+        }}
+      >
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <img
+            src="/app-icon.png"
+            alt="GoMini"
+            className="h-8 w-8 rounded-xl object-contain shadow-sm shrink-0"
+            onError={(e) => {
+              e.currentTarget.style.display = 'none';
+            }}
+          />
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-xs sm:text-sm text-white truncate">Agent Workspace</span>
+              <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded-full font-bold flex items-center gap-1 shrink-0">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span className="hidden xs:inline">Online</span>
+              </span>
+            </div>
+          </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-xs">
-            <User className="w-3.5 h-3.5 text-slate-400" />
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {/* Agent Name Badge */}
+          <div className="flex items-center gap-1.5 bg-slate-950 px-2 sm:px-3 py-1.5 rounded-xl border border-slate-800 text-xs">
+            <User className="w-3.5 h-3.5 text-purple-400 shrink-0" />
             <input
               type="text"
               value={agentName}
@@ -218,27 +325,37 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
                 setAgentName(e.target.value);
                 localStorage.setItem('gomini_agent_name', e.target.value);
               }}
-              className="bg-transparent font-bold text-white focus:outline-none w-28"
+              title="Agent Name"
+              className="bg-transparent font-bold text-white focus:outline-none w-16 sm:w-24 text-xs"
             />
           </div>
+
+          {/* Prominent Sign Out Button - Always visible on mobile */}
           <button
             onClick={onSignOut || onSwitchToPassenger}
-            className="text-xs font-bold text-slate-400 hover:text-white px-3 py-1.5 rounded-xl border border-slate-800 hover:border-slate-700 transition-all cursor-pointer flex items-center gap-1.5"
+            className="text-xs font-bold text-rose-300 hover:text-rose-100 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 px-2.5 sm:px-3 py-1.5 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shrink-0 active:scale-95"
+            title="Sign Out"
+            aria-label="Sign Out"
           >
-            Sign Out
+            <LogOut className="w-3.5 h-3.5" />
+            <span className="hidden xs:inline">Sign Out</span>
           </button>
         </div>
       </header>
 
-      {/* 3-Pane Body */}
-      <div className="flex-1 flex overflow-hidden">
+      {/* 3-Pane Body: Master-Detail on mobile */}
+      <div className="flex-1 flex overflow-hidden relative min-h-0">
         {/* Pane 1: Queue List */}
-        <aside className="w-80 border-r border-slate-800/80 bg-slate-950 flex flex-col flex-shrink-0">
+        <aside
+          className={`${
+            selectedConv ? 'hidden md:flex' : 'flex'
+          } w-full md:w-80 border-r border-slate-800/80 bg-slate-950 flex-col flex-shrink-0 min-h-0`}
+        >
           {/* Tabs */}
-          <div className="p-3 border-b border-slate-800/80 grid grid-cols-3 gap-1 bg-slate-900/40">
+          <div className="p-3 border-b border-slate-800/80 grid grid-cols-3 gap-1 bg-slate-900/40 shrink-0">
             <button
               onClick={() => setActiveTab('unassigned')}
-              className={`py-1.5 text-xs font-bold rounded-lg transition-all ${
+              className={`py-2 sm:py-1.5 text-xs font-bold rounded-lg transition-all ${
                 activeTab === 'unassigned' ? 'bg-pink-500 text-white shadow-sm' : 'text-slate-400 hover:text-white'
               }`}
             >
@@ -246,7 +363,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
             </button>
             <button
               onClick={() => setActiveTab('mine')}
-              className={`py-1.5 text-xs font-bold rounded-lg transition-all ${
+              className={`py-2 sm:py-1.5 text-xs font-bold rounded-lg transition-all ${
                 activeTab === 'mine' ? 'bg-purple-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
               }`}
             >
@@ -254,7 +371,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
             </button>
             <button
               onClick={() => setActiveTab('resolved')}
-              className={`py-1.5 text-xs font-bold rounded-lg transition-all ${
+              className={`py-2 sm:py-1.5 text-xs font-bold rounded-lg transition-all ${
                 activeTab === 'resolved' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-white'
               }`}
             >
@@ -312,44 +429,71 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
         </aside>
 
         {/* Pane 2: Conversation Thread */}
-        <main className="flex-1 flex flex-col bg-slate-900/30 overflow-hidden">
+        <main
+          className={`${
+            !selectedConv ? 'hidden md:flex' : 'flex'
+          } flex-1 flex-col bg-slate-900/30 overflow-hidden min-h-0 w-full`}
+        >
           {selectedConv ? (
             <>
               {/* Ticket Top bar */}
-              <div className="h-14 px-6 border-b border-slate-800 flex items-center justify-between bg-slate-900/80">
-                <div>
-                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <span>{selectedConv.passenger_name}</span>
-                    <span className="text-xs text-slate-400 font-mono">({selectedConv.employee_id})</span>
-                  </h3>
-                  <p className="text-xs text-purple-400">{selectedConv.route}</p>
+              <div className="h-14 px-3 sm:px-6 border-b border-slate-800 flex items-center justify-between bg-slate-900/80 gap-2 shrink-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedConv(null)}
+                    className="md:hidden p-1.5 -ml-1 rounded-xl text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700 border border-slate-700/60 flex items-center gap-1 text-xs font-bold transition-all shrink-0 active:scale-95 cursor-pointer"
+                    title="Back to Tickets Queue"
+                    aria-label="Back to Tickets Queue"
+                  >
+                    <ArrowLeft className="w-4 h-4 text-slate-200" />
+                    <span className="hidden xs:inline">Queue</span>
+                  </button>
+                  <div className="min-w-0">
+                    <h3 className="text-xs sm:text-sm font-bold text-white flex items-center gap-1.5 truncate">
+                      <span className="truncate">{selectedConv.passenger_name}</span>
+                      <span className="text-[11px] text-slate-400 font-mono shrink-0">({selectedConv.employee_id})</span>
+                    </h3>
+                    <p className="text-[11px] text-purple-400 truncate">{selectedConv.route}</p>
+                  </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                  {/* Passenger Details Button for Mobile */}
+                  <button
+                    type="button"
+                    onClick={() => setShowRiderInfo(true)}
+                    className="lg:hidden p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-cyan-400 hover:text-cyan-300 border border-slate-700/60 transition-all flex items-center justify-center shrink-0 cursor-pointer"
+                    title="View Passenger & Route Details"
+                    aria-label="View Passenger & Route Details"
+                  >
+                    <Info className="w-4 h-4" />
+                  </button>
+
                   {!selectedConv.assigned_agent_id && (
                     <button
                       onClick={handleClaimTicket}
                       disabled={claiming}
-                      className="px-3.5 py-1.5 rounded-xl font-bold text-xs bg-purple-600 hover:bg-purple-500 text-white shadow-md shadow-purple-600/20 transition-all"
+                      className="px-2.5 sm:px-3.5 py-1.5 rounded-xl font-bold text-xs bg-purple-600 hover:bg-purple-500 text-white shadow-md shadow-purple-600/20 transition-all shrink-0 cursor-pointer"
                     >
-                      {claiming ? 'Claiming...' : 'Claim Ticket'}
+                      {claiming ? 'Claiming...' : 'Claim'}
                     </button>
                   )}
 
                   {selectedConv.status !== 'resolved' && (
                     <button
                       onClick={handleResolveTicket}
-                      className="px-3 py-1.5 rounded-xl font-bold text-xs bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/30 transition-all flex items-center gap-1.5"
+                      className="px-2.5 sm:px-3 py-1.5 rounded-xl font-bold text-xs bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/30 transition-all flex items-center gap-1 shrink-0 cursor-pointer"
                     >
                       <CheckCircle className="w-3.5 h-3.5" />
-                      <span>Resolve</span>
+                      <span className="hidden xs:inline">Resolve</span>
                     </button>
                   )}
                 </div>
               </div>
 
               {/* Chat Messages */}
-              <div className="flex-1 p-6 overflow-y-auto space-y-3">
+              <div className="flex-1 p-3 sm:p-6 overflow-y-auto space-y-3 min-h-0">
                 {messages.map((m) => {
                   const isAgent = m.sender_type === 'agent';
                   const isBot = m.sender_type === 'bot';
@@ -371,7 +515,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
                         {isAgent ? `🧑‍💼 You (${m.sender_name})` : isBot ? '🤖 Bot Auto-Answer' : `👤 ${m.sender_name}`}
                       </div>
                       <div
-                        className={`max-w-[70%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-sm ${
+                        className={`max-w-[85%] sm:max-w-[70%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-sm ${
                           isAgent
                             ? 'bg-purple-600 text-white rounded-tr-none'
                             : isBot
@@ -392,12 +536,12 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
 
               {/* Canned Quick Replies Drawer */}
               {showCanned && (
-                <div className="p-3 bg-slate-900 border-t border-slate-800 flex flex-wrap gap-2 max-h-36 overflow-y-auto">
+                <div className="p-3 bg-slate-900 border-t border-slate-800 flex flex-wrap gap-2 max-h-36 overflow-y-auto shrink-0">
                   {cannedResponses.map((cr) => (
                     <button
                       key={cr.id}
                       onClick={() => handleApplyCanned(cr.message_ar)}
-                      className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-purple-500/50 text-left text-xs text-slate-300 transition-all flex items-center gap-2"
+                      className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-purple-500/50 text-left text-xs text-slate-300 transition-all flex items-center gap-2 cursor-pointer"
                     >
                       <span className="font-mono text-purple-400 font-bold">{cr.shortcut}</span>
                       <span className="truncate max-w-[200px]">{cr.title}</span>
@@ -406,35 +550,41 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
                 </div>
               )}
 
-              {/* Message Input */}
-              <form onSubmit={handleSendAgentMessage} className="p-4 bg-slate-900/90 border-t border-slate-800 flex items-center gap-2">
+              {/* Message Input with Safe-area Bottom Inset */}
+              <form
+                onSubmit={handleSendAgentMessage}
+                className="p-3 sm:p-4 bg-slate-900/90 border-t border-slate-800 flex items-center gap-2 shrink-0"
+                style={{
+                  paddingBottom: 'max(env(safe-area-inset-bottom, 0px) + 8px, 14px)'
+                }}
+              >
                 <button
                   type="button"
                   onClick={() => setShowCanned(!showCanned)}
-                  className="px-3 py-2.5 rounded-xl text-xs font-bold bg-slate-950 border border-slate-800 text-purple-300 hover:border-purple-500/40"
+                  className="px-2.5 sm:px-3 py-2.5 rounded-xl text-xs font-bold bg-slate-950 border border-slate-800 text-purple-300 hover:border-purple-500/40 shrink-0 cursor-pointer"
                   title="Canned responses shortcut"
                 >
-                  ⚡ /Canned
+                  ⚡ <span className="hidden sm:inline">/Canned</span>
                 </button>
                 <input
                   type="text"
                   value={inputMsg}
                   onChange={(e) => setInputMsg(e.target.value)}
                   placeholder="Type a response to the rider..."
-                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-purple-500"
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 sm:px-4 py-2.5 text-base sm:text-xs text-white focus:outline-none focus:border-purple-500 min-w-0"
                 />
                 <button
                   type="submit"
                   disabled={!inputMsg.trim()}
-                  className="h-10 px-4 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-purple-600/20"
+                  className="h-10 px-3 sm:px-4 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-purple-600/20 shrink-0 cursor-pointer active:scale-95"
                 >
                   <Send className="w-3.5 h-3.5" />
-                  <span>Send</span>
+                  <span className="hidden xs:inline">Send</span>
                 </button>
               </form>
             </>
           ) : (
-            <div className="flex-1 flex flex-col items-center justify-center text-slate-500 text-xs">
+            <div className="flex-1 flex flex-col items-center justify-center text-slate-500 text-xs p-6 text-center">
               <MessageSquare className="w-12 h-12 text-slate-700 mb-3 stroke-[1.2]" />
               <p className="font-bold text-slate-400">Select a ticket from the left queue</p>
               <p className="text-slate-600 mt-1">Live incoming requests will update in real-time</p>
@@ -442,79 +592,45 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
           )}
         </main>
 
-        {/* Pane 3: Passenger & Trip Context */}
+        {/* Pane 3: Passenger & Trip Context on Desktop */}
         {selectedConv && (
-          <aside className="w-80 border-l border-slate-800/80 bg-slate-950 p-5 flex flex-col gap-5 flex-shrink-0">
-            <div>
-              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Passenger Profile</h4>
-              <div className="bg-slate-900/60 p-4 rounded-2xl border border-slate-800 space-y-2 text-xs">
-                <div>
-                  <div className="text-slate-500 text-[11px]">Employee Name</div>
-                  <div className="font-bold text-white text-sm">{selectedConv.passenger_name}</div>
-                </div>
-                <div>
-                  <div className="text-slate-500 text-[11px]">TaskUs EID</div>
-                  <div className="font-mono text-cyan-400 font-bold">{selectedConv.employee_id}</div>
-                </div>
-                <div>
-                  <div className="text-slate-500 text-[11px]">Assigned Route</div>
-                  <div className="text-purple-300 font-bold">{selectedConv.route}</div>
-                </div>
-                {selectedConv.passenger_phone && (
-                  <div>
-                    <div className="text-slate-500 text-[11px]">Phone</div>
-                    <a href={`tel:${selectedConv.passenger_phone}`} className="text-emerald-400 font-mono hover:underline">
-                      {selectedConv.passenger_phone}
-                    </a>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div>
-              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Live Dispatch Assignment</h4>
-              {relatedTrip ? (
-                <div className="bg-gradient-to-br from-slate-900 to-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3 text-xs shadow-md">
-                  <div className="flex items-center justify-between">
-                    <span className="px-2.5 py-0.5 rounded-lg text-xs font-black font-mono bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                      {relatedTrip.vehicle_code}
-                    </span>
-                    <span className="text-[10px] font-bold text-slate-400">{relatedTrip.vehicle_type}</span>
-                  </div>
-
-                  <div className="space-y-1 text-slate-300">
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Shift Time:</span>
-                      <span className="font-bold text-white">{relatedTrip.shift_time}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Pickup Start:</span>
-                      <span className="font-bold text-cyan-400">{relatedTrip.trip_time || relatedTrip.shift_time}</span>
-                    </div>
-                  </div>
-
-                  <div className="pt-2 border-t border-slate-800 flex justify-between items-center">
-                    <div>
-                      <div className="text-[10px] text-slate-500">Driver</div>
-                      <div className="font-bold text-white text-xs">{relatedTrip.captain_name || 'Assigned'}</div>
-                    </div>
-                    {relatedTrip.captain_phone && (
-                      <a
-                        href={`tel:${relatedTrip.captain_phone}`}
-                        className="p-2 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30"
-                      >
-                        <Phone className="w-3.5 h-3.5" />
-                      </a>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="p-4 rounded-2xl border border-slate-800/80 bg-slate-900/30 text-center text-xs text-slate-500">
-                  No active trip data pushed yet from Google Sheets.
-                </div>
-              )}
-            </div>
+          <aside className="hidden lg:flex w-80 border-l border-slate-800/80 bg-slate-950 p-5 flex-col gap-5 flex-shrink-0 overflow-y-auto">
+            {renderPassengerProfile()}
+            {renderDispatchAssignment()}
           </aside>
+        )}
+
+        {/* Mobile Passenger & Trip Context Bottom Sheet Modal */}
+        {selectedConv && showRiderInfo && (
+          <div
+            className="fixed inset-0 z-50 lg:hidden flex flex-col justify-end bg-black/60 backdrop-blur-xs"
+            onClick={() => setShowRiderInfo(false)}
+          >
+            <div
+              className="bg-slate-950 border-t border-slate-800 rounded-t-3xl max-h-[85vh] overflow-y-auto p-5 space-y-5 animate-in slide-in-from-bottom duration-200"
+              style={{
+                paddingBottom: 'max(env(safe-area-inset-bottom, 0px) + 16px, 20px)'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                  <span>Passenger & Route Info</span>
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => setShowRiderInfo(false)}
+                  className="h-8 w-8 rounded-full bg-slate-800 text-slate-300 hover:text-white flex items-center justify-center border border-slate-700 cursor-pointer"
+                  title="Close"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {renderPassengerProfile()}
+              {renderDispatchAssignment()}
+            </div>
+          </div>
         )}
       </div>
     </div>
