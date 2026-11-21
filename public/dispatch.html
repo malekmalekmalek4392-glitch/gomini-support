@@ -395,15 +395,34 @@
             });
 
             const rows = roster.map(item => {
+              const cleanPhone = String(item.phone || '').replace(/^=/, '').trim();
               return {
+                'EID': item.employee_id,
                 'Employee ID': item.employee_id,
+                'ID': item.employee_id,
+                'eid': item.employee_id,
+
+                'Name': item.name,
                 'Employee Name': item.name,
-                'Mobile': item.phone,
+                'name': item.name,
+
+                'Phone': cleanPhone,
+                'Mobile': cleanPhone,
+                'phone': cleanPhone,
+
                 'Final Route': item.route,
                 'Route': item.route,
+                'route': item.route,
+
                 'Collection Point': item.collection_point,
+                'Collection point': item.collection_point,
+                'collection_point': item.collection_point,
                 'Area': item.collection_point,
+                'area': item.collection_point,
+
                 'Gender': 'Male',
+                'gender': 'Male',
+
                 ...(item.schedules || {})
               };
             });
@@ -2272,7 +2291,7 @@
                       <template x-for="(p, pIdx) in trip.pax" :key="pIdx">
                         <span
                           class="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700/70 text-slate-200 flex items-center gap-1.5">
-                          <span class="font-bold text-white" x-text="p.Name"></span>
+                          <span class="font-bold text-white" x-text="p.Name || p['Employee Name'] || p.name"></span>
                           <span class="text-[10px] text-slate-400" x-text="'(' + getCollectionPoint(p) + ')'"></span>
                           <span class="text-[9px] px-1.5 py-0.2 rounded font-bold"
                             :class="getGender(p) === 'F' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' : 'bg-slate-700/80 text-slate-300'"
@@ -2562,7 +2581,7 @@
                           class="flex justify-between items-center pb-3 border-b border-slate-700/30 last:border-0 last:pb-0">
                           <div>
                             <p class="font-bold text-slate-200 text-sm flex items-center gap-2">
-                              <span x-text="p.Name"></span>
+                              <span x-text="p.Name || p['Employee Name'] || p.name || ('Employee #' + (p.EID || p['Employee ID']))"></span>
                               <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400"
                                 x-text="getGender(p)"></span>
                             </p>
@@ -2577,9 +2596,9 @@
                               <span x-text="getCollectionPoint(p)"></span>
                             </p>
                           </div>
-                          <a :href="'tel:' + p.Phone"
+                          <a :href="'tel:' + (p.Phone || p.Mobile || p.phone)"
                             class="text-xs font-bold text-blue-400 hover:text-blue-300 transition-colors"
-                            x-text="p.Phone || 'No Phone'"></a>
+                            x-text="p.Phone || p.Mobile || p.phone || 'No Phone'"></a>
                         </div>
                       </template>
                     </div>
