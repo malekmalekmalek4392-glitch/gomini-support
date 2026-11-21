@@ -114,7 +114,7 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
     const input = customerId.trim();
 
     if (!input) {
-      setCustomerError('Please enter your Employee ID or mobile number.');
+      setCustomerError('Please enter your Employee ID.');
       return;
     }
 
@@ -125,9 +125,7 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
 
       if (data && data.length > 0) {
         const match = data.find(p => 
-          String(p.employee_id || '').trim() === input ||
-          String(p.phone || '').replace(/\D/g, '').includes(input.replace(/\D/g, '')) ||
-          String(p.name || '').toLowerCase().includes(input.toLowerCase())
+          String(p.employee_id || '').trim() === input
         );
 
         if (match) {
@@ -141,7 +139,7 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
             localStorage.setItem('gomini_user_role', 'customer');
             onCustomerLogin(partialMatch);
           } else {
-            setCustomerError(`No passenger found for "${input}". Please check your ID or contact dispatch.`);
+            setCustomerError(`No employee record found for ID "${input}". Please check your Employee ID.`);
           }
         }
       } else {
@@ -259,7 +257,7 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
                       type="email"
                       value={staffEmail}
                       onChange={(e) => setStaffEmail(e.target.value)}
-                      placeholder="admin@gomini.com, executive@gomini.com, agent@gomini.com"
+                      placeholder=""
                       className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-900/90 border border-slate-700 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all font-medium"
                       required
                     />
@@ -337,10 +335,10 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
             {activeTab === 'customer' && (
               <form onSubmit={handleCustomerSubmit} className="space-y-4">
                 
-                {/* Customer ID / EID / Phone */}
+                {/* Employee ID */}
                 <div>
                   <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
-                    Employee ID (EID) or Mobile
+                    Employee ID
                   </label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
@@ -350,13 +348,13 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
                       type="text"
                       value={customerId}
                       onChange={(e) => setCustomerId(e.target.value)}
-                      placeholder="Enter Employee ID or registered mobile phone"
+                      placeholder="Enter Employee ID"
                       className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-900/90 border border-slate-700 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all font-medium"
                       required
                     />
                   </div>
                   <p className="text-[11px] text-slate-500 mt-2">
-                    No password required. Enter your registered ID or phone to access your commute schedule.
+                    No password required. Enter your Employee ID to access your commute schedule.
                   </p>
                 </div>
 
