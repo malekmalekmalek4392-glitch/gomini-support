@@ -396,7 +396,10 @@
 
             const rows = roster.map(item => {
               const cleanPhone = String(item.phone || '').replace(/^=/, '').trim();
-              return {
+              const genderVal = (item.schedules && item.schedules._gender) || item.gender || '';
+              const dtdVal = (item.schedules && item.schedules._dtd) || item.dtd || '';
+
+              const r = {
                 'EID': item.employee_id,
                 'Employee ID': item.employee_id,
                 'ID': item.employee_id,
@@ -420,11 +423,17 @@
                 'Area': item.collection_point,
                 'area': item.collection_point,
 
-                'Gender': 'Male',
-                'gender': 'Male',
+                'DTD': dtdVal,
+                'dtd': dtdVal,
 
                 ...(item.schedules || {})
               };
+
+              if (genderVal) {
+                r['Gender'] = genderVal;
+                r['gender'] = genderVal;
+              }
+              return r;
             });
 
             const allRoutes = Array.from(new Set(rows.map(r => r.Route).filter(Boolean))).sort();
