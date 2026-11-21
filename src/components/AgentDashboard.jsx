@@ -135,11 +135,11 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     let query = supabase.from('conversations').select('*').order('last_message_at', { ascending: false });
 
     if (activeTab === 'unassigned') {
-      // Any ticket not assigned to any agent and not resolved
-      query = query.is('assigned_agent_id', null).neq('status', 'resolved');
+      // Unassigned queue: not assigned to any agent and not resolved
+      query = query.or('assigned_agent_id.is.null,assigned_agent_name.is.null').neq('status', 'resolved');
     } else if (activeTab === 'mine') {
-      // Strictly assigned to THIS agent only, active
-      query = query.eq('assigned_agent_id', agentId).neq('status', 'resolved');
+      // Strictly assigned to THIS agent only by their logged-in name!
+      query = query.not('assigned_agent_name', 'is', null).ilike('assigned_agent_name', (agentName || '').trim()).neq('status', 'resolved');
     } else if (activeTab === 'resolved') {
       // Resolved history
       query = query.eq('status', 'resolved');
@@ -192,10 +192,17 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
           .maybeSingle();
 
         if (convData && convData.status !== 'resolved') {
-          const isUnassigned = !convData.assigned_agent_id;
-          const isMyCustomer = convData.assigned_agent_id === agentId;
+          const isUnassigned = !convData.assigned_agent_id || !convData.assigned_agent_name;
+          const isMyCustomer = Boolean(
+            convData.assigned_agent_id &&
+            convData.assigned_agent_name &&
+            agentName &&
+            convData.assigned_agent_name.trim().toLowerCase() === agentName.trim().toLowerCase()
+          );
 
-          // Notify if unassigned (to all agents) OR if customer replies to THIS agent's claimed ticket!
+          // 1. If UNASSIGNED: ALL logged-in agents receive notification!
+          // 2. If CLAIMED BY THIS AGENT: ONLY this agent receives notification!
+          // 3. If CLAIMED BY ANOTHER AGENT: Do NOT notify this agent!
           if (isUnassigned || isMyCustomer) {
             playNotificationChime();
             setNewTicketNotification({
@@ -241,7 +248,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [activeTab, agentId]);
+  }, [activeTab, agentId, agentName]);
 
   // Load Messages for selected ticket (with complete history across all past tickets & agents)
   const loadMessages = async (conv) => {
@@ -353,57 +360,57 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     return fallbackId;
   };
 
-  // Claim Ticket (Atomic with direct fallback)
+  // Claim Ticket (Atomic direct update with concurrency check)
   const handleClaimTicket = async () => {
     if (!selectedConv || claiming) return;
     setClaiming(true);
 
     try {
+      const currentName = (agentName || 'Agent Support').trim();
       const resolvedId = await getValidAgentId();
-      let success = false;
 
-      // 1. Try atomic claim_ticket RPC
-      try {
-        const { data, error } = await supabase.rpc('claim_ticket', {
-          ticket_id: selectedConv.id,
-          agent_id: resolvedId,
-          agent_name: agentName || 'Agent Support'
-        });
-        if (!error && (data?.success || data === true)) {
-          success = true;
-        }
-      } catch (rpcErr) {
-        console.warn('RPC claim_ticket failed, falling back to direct update:', rpcErr);
+      // Check current assignment status from DB first
+      const { data: freshConv } = await supabase
+        .from('conversations')
+        .select('assigned_agent_name, assigned_agent_id, status')
+        .eq('id', selectedConv.id)
+        .maybeSingle();
+
+      if (
+        freshConv?.assigned_agent_name &&
+        freshConv.assigned_agent_name.trim().toLowerCase() !== currentName.toLowerCase()
+      ) {
+        alert(
+          agentLang === 'ar'
+            ? `هذه التذكرة مستلمة بالفعل بواسطة ${freshConv.assigned_agent_name}.`
+            : `This ticket is already claimed by ${freshConv.assigned_agent_name}.`
+        );
+        await fetchConversations();
+        setClaiming(false);
+        return;
       }
 
-      // 2. Direct update fallback (NO updated_at column in conversations schema)
-      if (!success) {
-        const { error: updErr } = await supabase
-          .from('conversations')
-          .update({
-            assigned_agent_id: resolvedId,
-            assigned_agent_name: agentName || 'Agent Support',
-            status: 'open'
-          })
-          .eq('id', selectedConv.id);
+      // Direct update in conversations table
+      const { error: updErr } = await supabase
+        .from('conversations')
+        .update({
+          assigned_agent_id: resolvedId,
+          assigned_agent_name: currentName,
+          status: 'open'
+        })
+        .eq('id', selectedConv.id);
 
-        if (!updErr) {
-          success = true;
-        } else {
-          console.error('Direct claim update error:', updErr);
-        }
-      }
-
-      if (success) {
+      if (!updErr) {
         setSelectedConv((prev) => ({
           ...prev,
           assigned_agent_id: resolvedId,
-          assigned_agent_name: agentName || 'Agent Support',
+          assigned_agent_name: currentName,
           status: 'open'
         }));
         await fetchConversations();
       } else {
-        alert(agentLang === 'ar' ? 'تعذر استلام التذكرة أو تم استلامها بالفعل بواسطة موظف آخر.' : 'Could not claim ticket. It may already be assigned.');
+        console.error('Direct claim update error:', updErr);
+        alert(agentLang === 'ar' ? 'تعذر استلام التذكرة أو تم استلامها بالفعل.' : 'Could not claim ticket. It may already be assigned.');
       }
     } catch (e) {
       console.error('Ticket claim failure:', e);
@@ -455,14 +462,17 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     e?.preventDefault();
     if (!inputMsg.trim() || !selectedConv) return;
 
+    const currentName = (agentName || '').trim().toLowerCase();
+    const assignedName = (selectedConv.assigned_agent_name || '').trim().toLowerCase();
+
     // Enforce claiming check before sending
-    if (!selectedConv.assigned_agent_id) {
+    if (!selectedConv.assigned_agent_id || !assignedName) {
       alert(agentLang === 'ar' ? 'يجب استلام التذكرة أولاً قبل الرد.' : 'Please claim the ticket first before replying.');
       return;
     }
 
-    if (selectedConv.assigned_agent_id !== agentId) {
-      alert(agentLang === 'ar' ? 'هذه التذكرة مستلمة بواسطة موظف آخر.' : 'This ticket is claimed by another agent.');
+    if (assignedName !== currentName) {
+      alert(agentLang === 'ar' ? `هذه التذكرة مستلمة بواسطة ${selectedConv.assigned_agent_name}.` : `This ticket is claimed by ${selectedConv.assigned_agent_name}.`);
       return;
     }
 
@@ -574,9 +584,24 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     </div>
   );
 
-  const isClaimedByMe = selectedConv?.assigned_agent_id === agentId;
-  const isClaimedByOther = selectedConv?.assigned_agent_id && selectedConv.assigned_agent_id !== agentId;
-  const isUnassigned = selectedConv && !selectedConv.assigned_agent_id;
+  const currentAgentName = (agentName || '').trim().toLowerCase();
+  const assignedAgentName = (selectedConv?.assigned_agent_name || '').trim().toLowerCase();
+
+  const isClaimedByMe = Boolean(
+    selectedConv?.assigned_agent_id &&
+    assignedAgentName &&
+    currentAgentName &&
+    assignedAgentName === currentAgentName
+  );
+
+  const isClaimedByOther = Boolean(
+    selectedConv?.assigned_agent_id &&
+    assignedAgentName &&
+    currentAgentName &&
+    assignedAgentName !== currentAgentName
+  );
+
+  const isUnassigned = !selectedConv?.assigned_agent_id || !selectedConv?.assigned_agent_name;
   const isResolved = selectedConv?.status === 'resolved';
 
   return (
