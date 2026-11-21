@@ -168,10 +168,9 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
         if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
           const conv = payload.new;
           const isUnassigned = !conv.assigned_agent_id && conv.status !== 'resolved';
-          const needsAgent = conv.category === 'complaint' || conv.category === 'missed_bus';
 
-          // ONLY trigger chime & popup notification when chatbot CANNOT answer automatically!
-          if (isUnassigned && needsAgent) {
+          // Trigger chime & popup notification for ANY unassigned customer request (including reopened from resolved)
+          if (isUnassigned) {
             playNotificationChime();
             setNewTicketNotification({
               id: conv.id,
@@ -184,7 +183,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
 
             if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
               try {
-                new Notification('GoMini Dispatch: Unassigned Request', {
+                new Notification(agentLang === 'ar' ? 'GoMini: طلب راكب غير مسند' : 'GoMini Dispatch: Unassigned Request', {
                   body: `${conv.passenger_name} (${conv.route}): ${conv.last_message}`,
                   icon: '/app-icon.png'
                 });

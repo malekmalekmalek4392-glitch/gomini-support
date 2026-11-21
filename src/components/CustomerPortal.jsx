@@ -71,7 +71,31 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
   const [messages, setMessages] = useState([]);
   const [inputMsg, setInputMsg] = useState('');
   const [sendingMsg, setSendingMsg] = useState(false);
+  const [agentMsgNotification, setAgentMsgNotification] = useState(null);
+  const [unreadCount, setUnreadCount] = useState(0);
   const messagesEndRef = useRef(null);
+
+  // Play gentle support chime for passenger when a support agent responds
+  const playCustomerChime = () => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, now); // D5
+      osc.frequency.setValueAtTime(880, now + 0.12); // A5
+      gain.gain.setValueAtTime(0.3, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.45);
+    } catch (e) {}
+  };
 
   // Load roster from Supabase
   const loadRoster = async () => {
@@ -104,6 +128,13 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
 
   useEffect(() => {
     loadRoster();
+
+    // Ask for browser notification permission once
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+      try {
+        Notification.requestPermission();
+      } catch (e) {}
+    }
 
     // Realtime WebSocket subscription on roster table
     const channel = supabase
@@ -209,6 +240,28 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
               return [...prev, payload.new];
             });
             setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+
+            // Trigger notification & audio chime to customer when a human support agent responds!
+            if (payload.new.sender_type === 'agent') {
+              playCustomerChime();
+              setAgentMsgNotification({
+                sender: payload.new.sender_name || (chatLang === 'ar' ? 'موظف خدمة العملاء' : 'Support Agent'),
+                text: payload.new.body
+              });
+
+              if (!showChat) {
+                setUnreadCount((prev) => prev + 1);
+              }
+
+              if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+                try {
+                  new Notification(chatLang === 'ar' ? 'GoMini: رد جديد من الدعم' : 'GoMini Support Response', {
+                    body: `${payload.new.sender_name || 'Support'}: ${payload.new.body}`,
+                    icon: '/app-icon.png'
+                  });
+                } catch (e) {}
+              }
+            }
           }
         }
       )
@@ -217,11 +270,13 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [conversation?.id]);
+  }, [conversation?.id, showChat, chatLang]);
 
-  // Scroll to latest message whenever chat drawer is opened
+  // Scroll to latest message and clear unread notifications whenever chat drawer is opened
   useEffect(() => {
     if (showChat) {
+      setUnreadCount(0);
+      setAgentMsgNotification(null);
       setTimeout(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 150);
@@ -285,7 +340,27 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
       return { canBotAnswer: true, intent: 'schedule', category: 'where_is_bus' };
     }
 
-    // 6. Common greetings -> Automated reply
+    // 6. Gratitude / Thank you -> Automated welcome & happy to help reply
+    const isThanks =
+      t.includes('thank') ||
+      t.includes('thx') ||
+      t.includes('ty') ||
+      t.includes('شكرا') ||
+      t.includes('شكراً') ||
+      t.includes('تسلم') ||
+      t.includes('الف شكر') ||
+      t.includes('مشكور') ||
+      t.includes('يعطيك العافيه') ||
+      t.includes('الله يعطيك العافيه') ||
+      t.includes('حبيبي') ||
+      t.includes('تمام شكرا') ||
+      t.includes('كلك ذوق');
+
+    if (isThanks) {
+      return { canBotAnswer: true, intent: 'thanks', category: 'general' };
+    }
+
+    // 7. Common greetings -> Automated reply
     if (t === 'hi' || t === 'hello' || t === 'hey' || t === 'مرحبا' || t === 'سلام' || t === 'السلام عليكم') {
       return { canBotAnswer: true, intent: 'greeting', category: 'general' };
     }
@@ -397,47 +472,76 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
         setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
       }
 
-      // 2. Query live trip context for this route
-      let tripData = null;
-      try {
-        const { data: tData } = await supabase
-          .from('trips')
-          .select('*')
-          .eq('route', passenger.route)
-          .order('id', { ascending: false })
-          .limit(1);
-        if (tData && tData.length > 0) tripData = tData[0];
-      } catch (err) {
-        console.warn('Trip query error:', err);
-      }
-
-      // 3. Extract actual passenger commute times
-      const activePlanDay = weeklyPlan.find(d => !d.isOff && d.trips && d.trips.length > 0) || weeklyPlan[0];
-      const toTrip = activePlanDay?.trips?.find(t => t.direction === 'To Office');
-      const fromTrip = activePlanDay?.trips?.find(t => t.direction === 'From Office');
+      // 2. Extract actual passenger commute times
+      const activePlanDay = weeklyPlan.find((d) => !d.isOff && d.trips && d.trips.length > 0) || weeklyPlan[0];
+      const toTrip = activePlanDay?.trips?.find((t) => t.direction === 'To Office');
+      const fromTrip = activePlanDay?.trips?.find((t) => t.direction === 'From Office');
 
       const toTripTime = toTrip?.tripTime || '19:25';
       const toShiftTime = toTrip?.shiftTime || '21:00';
       const fromTripTime = fromTrip?.tripTime || '06:00';
       const fromShiftTime = fromTrip?.shiftTime || '06:00';
       const pickupStation = passenger.collection_point || toTrip?.collectionPoint || (chatLang === 'ar' ? 'محطتك المحددة' : 'your designated station');
-      const carNumber = tripData?.vehicle_code ? `${tripData.vehicle_code} (${tripData.vehicle_type || 'HI-ACE'})` : (toTrip?.vehicle || 'HI-ACE (2H)');
-      const captainName = tripData?.captain_name || (chatLang === 'ar' ? 'كابتن الرحلة (قيد التعيين)' : 'Assigned Captain (Dispatch Operations)');
-      const captainPhone = tripData?.captain_phone || (chatLang === 'ar' ? 'متاح بغرفة العمليات' : 'Available in Dispatch');
+
+      // 3. Query live trip context specifically matching passenger's shift & route
+      let tripData = null;
+      try {
+        let tQuery = supabase.from('trips').select('*').eq('route', passenger.route);
+        if (toTrip?.shiftTime) {
+          tQuery = tQuery.eq('shift_time', toTrip.shiftTime);
+        }
+        const { data: tData } = await tQuery.order('id', { ascending: false }).limit(1);
+        if (tData && tData.length > 0) {
+          tripData = tData[0];
+        } else {
+          const { data: fbData } = await supabase.from('trips').select('*').eq('route', passenger.route).order('id', { ascending: false }).limit(1);
+          if (fbData && fbData.length > 0) tripData = fbData[0];
+        }
+      } catch (err) {
+        console.warn('Trip query error:', err);
+      }
+
+      // Format genuine vehicle specifications matching the route & shift
+      let carDescription = '';
+      const vCode = tripData?.vehicle_code || toTrip?.vehicle?.split(' ')?.[0] || '1H';
+      const vType = (tripData?.vehicle_type || 'HI-ACE').toUpperCase();
+
+      if (vType.includes('HI-ACE') || vType.includes('HIACE') || vCode.includes('H')) {
+        carDescription = chatLang === 'ar'
+          ? `حافلة تويوتا هايس 14 راكب مكيفة (كود خط السير: ${vCode})`
+          : `Toyota HiAce 14-Passenger Air-Conditioned Van (Route Code: ${vCode})`;
+      } else if (vType.includes('SUV') || vCode.includes('SU')) {
+        carDescription = chatLang === 'ar'
+          ? `سيارة دفع رباعي عائلية SUV (كود: ${vCode})`
+          : `SUV Commute Vehicle (Code: ${vCode})`;
+      } else if (vType.includes('SEDAN') || vCode.includes('S')) {
+        carDescription = chatLang === 'ar'
+          ? `سيارة سيدان مريحة خاصة (كود: ${vCode})`
+          : `Private Sedan Vehicle (Code: ${vCode})`;
+      } else {
+        carDescription = `${vType} (Code: ${vCode})`;
+      }
+
+      const captainName = tripData?.captain_name || (chatLang === 'ar' ? 'كابتن الخط المعتمد (فريق العمليات الميدانية)' : 'Certified Route Captain (Operations Team)');
+      const captainPhone = tripData?.captain_phone || (chatLang === 'ar' ? 'متاح مباشرة عبر خط الدعم وغرفة العمليات 24/7' : 'Available via Operations Dispatch 24/7');
 
       // 4. Formulate automated response in selected language
       let botReply = '';
       if (canBotAnswer) {
-        if (intent === 'greeting') {
+        if (intent === 'thanks') {
+          botReply = chatLang === 'ar'
+            ? `عفواً يا فندم! يسعدنا ويشرفنا دائماً خدمتك وتسهيل تنقلك مع GoMini. إذا كان لديك أي استفسار آخر نحن دائماً في الخدمة. نتمنى لك رحلة سعيدة وآمنة! 🌟`
+            : `You're very welcome! We are always delighted to assist your daily commute with GoMini. If you need anything else, we're always here for you. Have a safe and pleasant trip! 🌟`;
+        } else if (intent === 'greeting') {
           botReply = chatLang === 'ar'
             ? `مرحباً ${passenger.name}! كيف يمكننا مساعدة تنقلك اليوم؟ اسأل عن مكان الأتوبيس، المواعيد، أو الإبلاغ عن أي استفسار.`
             : `Hello ${passenger.name}! How can we help your commute today? You can ask about your bus schedule, trip times, or report an issue.`;
         } else {
           // Commute Details (Where is bus / Schedule / Delay)
           if (chatLang === 'ar') {
-            botReply = `📍 تفاصيل رحلتك لخط (${passenger.route || 'خطك المخصص'}):\n• موعد رحلة الذهاب للمكتب: ${toTripTime} (بداية الوردية: ${toShiftTime})\n• موعد رحلة العودة من المكتب: ${fromTripTime} (نهاية الوردية: ${fromShiftTime})\n• نقطة الركوب: ${pickupStation}\n\n⚠️ يرجى التواجد في نقطة الركوب قبل موعد الرحلة بـ 5 دقائق.\n\n🚌 رقم ونوع السيارة: ${carNumber}\n👤 كابتن الرحلة: ${captainName}\n📞 هاتف الكابتن: ${captainPhone}\n\nفريق التحكم وغرفة العمليات يتابع حركة الخط مباشرة.`;
+            botReply = `📍 تفاصيل رحلتك لخط (${passenger.route || 'خطك المخصص'}):\n• موعد رحلة الذهاب للمكتب: ${toTripTime} (بداية الوردية: ${toShiftTime})\n• موعد رحلة العودة من المكتب: ${fromTripTime} (نهاية الوردية: ${fromShiftTime})\n• نقطة الركوب: ${pickupStation}\n\n⚠️ يرجى التواجد في نقطة الركوب قبل موعد الرحلة بـ 5 دقائق.\n\n🚌 رقم ونوع السيارة: ${carDescription}\n👤 كابتن الرحلة: ${captainName}\n📞 هاتف الكابتن: ${captainPhone}\n\nفريق التحكم وغرفة العمليات يتابع حركة الخط مباشرة.`;
           } else {
-            botReply = `📍 Shuttle Details for ${passenger.route || 'your designated route'}:\n• To Office Trip Time: ${toTripTime} (Shift: ${toShiftTime})\n• From Office Trip Time: ${fromTripTime} (Shift: ${fromShiftTime})\n• Pickup Location: ${pickupStation}\n\n⚠️ Please be at pickup point 5 minutes before trip time.\n\n🚌 Car / Vehicle: ${carNumber}\n👤 Captain: ${captainName}\n📞 Captain Phone: ${captainPhone}\n\nOur dispatch operations team is tracking this route live.`;
+            botReply = `📍 Shuttle Details for ${passenger.route || 'your designated route'}:\n• To Office Trip Time: ${toTripTime} (Shift: ${toShiftTime})\n• From Office Trip Time: ${fromTripTime} (Shift: ${fromShiftTime})\n• Pickup Location: ${pickupStation}\n\n⚠️ Please be at pickup point 5 minutes before trip time.\n\n🚌 Car / Vehicle: ${carDescription}\n👤 Captain: ${captainName}\n📞 Captain Phone: ${captainPhone}\n\nOur dispatch operations team is tracking this route live.`;
           }
         }
       } else {
@@ -832,13 +936,63 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
         </div>
       </main>
 
+      {/* Toast Alert when Support Agent replies to customer */}
+      {agentMsgNotification && (
+        <div
+          dir={chatLang === 'ar' ? 'rtl' : 'ltr'}
+          className="fixed top-16 right-4 left-4 sm:left-auto sm:right-6 sm:w-96 z-50 bg-gradient-to-r from-purple-950 via-[#0B132B] to-slate-900 border-2 border-pink-500 rounded-2xl p-3.5 shadow-2xl flex items-center justify-between gap-3 animate-in slide-in-from-top duration-300"
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="h-9 w-9 rounded-xl bg-pink-500/20 flex items-center justify-center text-pink-400 shrink-0">
+              <MessageSquare className="w-5 h-5 animate-bounce" />
+            </div>
+            <div className="min-w-0 text-xs">
+              <p className="font-bold text-white truncate">
+                {chatLang === 'ar' ? `رد من ${agentMsgNotification.sender}` : `Reply from ${agentMsgNotification.sender}`}
+              </p>
+              <p className="text-[11px] text-slate-300 truncate mt-0.5 opacity-90">
+                "{agentMsgNotification.text}"
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={() => {
+                setShowChat(true);
+                setAgentMsgNotification(null);
+                setUnreadCount(0);
+              }}
+              className="px-2.5 py-1.5 rounded-lg bg-pink-500 hover:bg-pink-600 text-white font-bold text-xs transition-all cursor-pointer shadow-md"
+            >
+              {chatLang === 'ar' ? 'عرض' : 'View'}
+            </button>
+            <button
+              onClick={() => setAgentMsgNotification(null)}
+              className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer"
+              title="Dismiss"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Floating Support Chat Button */}
       <div className={`fixed bottom-6 right-6 z-40 ${showChat ? 'hidden sm:block' : 'block'}`}>
         <button
-          onClick={() => setShowChat(!showChat)}
+          onClick={() => {
+            setShowChat(!showChat);
+            setUnreadCount(0);
+            setAgentMsgNotification(null);
+          }}
           aria-label={showChat ? 'Close Support Chat' : 'Open Support Chat'}
-          className="h-14 w-14 rounded-full bg-gradient-to-r from-pink-500 to-rose-600 hover:from-pink-600 hover:to-rose-700 text-white flex items-center justify-center shadow-xl shadow-pink-500/30 transition-all transform hover:scale-105 active:scale-95 cursor-pointer"
+          className="relative h-14 w-14 rounded-full bg-gradient-to-r from-pink-500 to-rose-600 hover:from-pink-600 hover:to-rose-700 text-white flex items-center justify-center shadow-xl shadow-pink-500/30 transition-all transform hover:scale-105 active:scale-95 cursor-pointer"
         >
+          {unreadCount > 0 && !showChat && (
+            <span className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-cyan-400 text-slate-950 font-black text-[10px] flex items-center justify-center ring-2 ring-slate-950 animate-bounce">
+              {unreadCount}
+            </span>
+          )}
           {showChat ? <X className="w-6 h-6" /> : <MessageSquare className="w-6 h-6" />}
         </button>
       </div>
