@@ -1,21 +1,36 @@
 {
-  "short_name": "GoMini Support",
-  "name": "GoMini Shuttle Support & Chat",
+  "short_name": "GoMini",
+  "name": "GoMini Mobility",
+  "description": "TaskUs & GoMini Intelligent Mobility Operations & Commute Schedule",
   "icons": [
     {
-      "src": "/app-icon.png",
+      "src": "/icon-192.png",
       "type": "image/png",
-      "sizes": "192x192"
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "type": "image/png",
+      "sizes": "180x180",
+      "purpose": "any"
     },
     {
       "src": "/app-icon.png",
       "type": "image/png",
-      "sizes": "512x512"
+      "sizes": "512x512",
+      "purpose": "any"
     }
   ],
   "start_url": "/",
-  "background_color": "#020617",
-  "theme_color": "#E83E8C",
+  "background_color": "#070D1E",
+  "theme_color": "#0B132B",
   "display": "standalone",
   "orientation": "portrait"
 }

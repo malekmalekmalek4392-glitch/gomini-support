@@ -265,7 +265,7 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
                       value={staffEmail}
                       onChange={(e) => setStaffEmail(e.target.value)}
                       placeholder=""
-                      className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-900/90 border border-slate-700 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all font-medium"
+                      className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-900/90 border border-slate-700 text-base sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all font-medium"
                       required
                     />
                   </div>
@@ -286,7 +286,7 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
                         value={agentName}
                         onChange={(e) => setAgentName(e.target.value)}
                         placeholder="Enter the name that will help passengers (e.g. Sara, Omar)"
-                        className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-900/90 border border-cyan-500/50 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/20 transition-all font-medium"
+                        className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-900/90 border border-cyan-500/50 text-base sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/20 transition-all font-medium"
                         required={isAgent}
                       />
                     </div>
@@ -307,7 +307,7 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
                       value={staffPassword}
                       onChange={(e) => setStaffPassword(e.target.value)}
                       placeholder="••••••••"
-                      className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-900/90 border border-slate-700 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all font-medium"
+                      className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-900/90 border border-slate-700 text-base sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all font-medium"
                       required
                     />
                   </div>
@@ -356,7 +356,7 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
                       value={customerId}
                       onChange={(e) => setCustomerId(e.target.value)}
                       placeholder="Enter Employee ID"
-                      className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-900/90 border border-slate-700 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all font-medium"
+                      className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-900/90 border border-slate-700 text-base sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all font-medium"
                       required
                     />
                   </div>
