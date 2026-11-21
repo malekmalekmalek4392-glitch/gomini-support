@@ -161,12 +161,14 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
 
         if (match) {
           localStorage.setItem('gomini_active_eid', match.employee_id);
+          localStorage.setItem('gomini_passenger_data', JSON.stringify(match));
           localStorage.setItem('gomini_user_role', 'customer');
           onCustomerLogin(match);
         } else {
           const partialMatch = data.find(p => String(p.employee_id || '').includes(input));
           if (partialMatch) {
             localStorage.setItem('gomini_active_eid', partialMatch.employee_id);
+            localStorage.setItem('gomini_passenger_data', JSON.stringify(partialMatch));
             localStorage.setItem('gomini_user_role', 'customer');
             onCustomerLogin(partialMatch);
           } else {
@@ -174,15 +176,19 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
           }
         }
       } else {
+        const fallbackPax = { employee_id: input, name: `Employee ${input}` };
         localStorage.setItem('gomini_active_eid', input);
+        localStorage.setItem('gomini_passenger_data', JSON.stringify(fallbackPax));
         localStorage.setItem('gomini_user_role', 'customer');
-        onCustomerLogin({ employee_id: input });
+        onCustomerLogin(fallbackPax);
       }
     } catch (err) {
       console.error('Customer login error:', err);
+      const fallbackPax = { employee_id: input, name: `Employee ${input}` };
       localStorage.setItem('gomini_active_eid', input);
+      localStorage.setItem('gomini_passenger_data', JSON.stringify(fallbackPax));
       localStorage.setItem('gomini_user_role', 'customer');
-      onCustomerLogin({ employee_id: input });
+      onCustomerLogin(fallbackPax);
     } finally {
       setCustomerLoading(false);
     }

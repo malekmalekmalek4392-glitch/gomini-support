@@ -59,7 +59,14 @@ function checkIsD2D(timeStr, direction) {
 }
 
 export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPassenger }) {
-  const [passenger, setPassenger] = useState(initialPassenger || null);
+  const [passenger, setPassenger] = useState(() => {
+    if (initialPassenger) return initialPassenger;
+    try {
+      const saved = localStorage.getItem('gomini_passenger_data');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return null;
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [allRoster, setAllRoster] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -104,19 +111,29 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
       if (!error && data && data.length > 0) {
         setAllRoster(data);
 
-        if (initialPassenger) {
-          const match = data.find(p => String(p.employee_id) === String(initialPassenger.employee_id));
-          setPassenger(match || initialPassenger);
-        } else {
-          const savedEid = localStorage.getItem('gomini_active_eid') || '3367295';
+        // 1. Priority: Find matching record by active EID (stored or from props/state)
+        const activeEid = passenger?.employee_id || initialPassenger?.employee_id || localStorage.getItem('gomini_active_eid');
+
+        if (activeEid) {
           const match = data.find(
-            (p) => String(p.employee_id).includes(savedEid) || String(p.phone || '').includes(savedEid) || String(p.name).toLowerCase().includes('nawar')
+            (p) => String(p.employee_id || '').trim().toLowerCase() === String(activeEid).trim().toLowerCase()
           );
           if (match) {
             setPassenger(match);
-          } else {
-            setPassenger(data[0]);
+            localStorage.setItem('gomini_passenger_data', JSON.stringify(match));
+            localStorage.setItem('gomini_active_eid', match.employee_id);
+            return;
           }
+        }
+
+        // 2. If initialPassenger was passed, use it
+        if (initialPassenger) {
+          setPassenger(initialPassenger);
+        } else if (!passenger && data.length > 0) {
+          // Only fallback to first record if passenger state is completely empty
+          setPassenger(data[0]);
+          localStorage.setItem('gomini_passenger_data', JSON.stringify(data[0]));
+          localStorage.setItem('gomini_active_eid', data[0].employee_id);
         }
       }
     } catch (e) {
@@ -164,6 +181,7 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
     if (found) {
       setPassenger(found);
       localStorage.setItem('gomini_active_eid', found.employee_id);
+      localStorage.setItem('gomini_passenger_data', JSON.stringify(found));
       setSearchQuery('');
     } else {
       alert('No passenger found matching: ' + searchQuery);
@@ -758,17 +776,17 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
                     Passenger Schedule
                   </span>
                   <span className="text-xs text-slate-400 font-mono">
-                    EID: {passenger?.employee_id || '3367295'}
+                    EID: {passenger?.employee_id || '—'}
                   </span>
                 </div>
                 <h2 className="text-2xl sm:text-3xl font-black text-white">
-                  {passenger?.name || 'Abdulrahman Nawar'}
+                  {passenger?.name || (loading ? 'Loading...' : 'Passenger')}
                 </h2>
                 <p className="text-xs sm:text-sm text-slate-400 mt-1 flex items-center gap-2 flex-wrap">
-                  <span>Phone: {cleanPhone || '+20 (10) 33774966'}</span>
+                  <span>Phone: {cleanPhone || passenger?.phone || 'Not available'}</span>
                   <span>•</span>
                   <span className="text-cyan-400 font-semibold">
-                    {passenger?.route || 'R5 - imbaba Ring road'}
+                    {passenger?.route || (loading ? 'Loading...' : 'Route not assigned')}
                   </span>
                 </p>
               </div>
@@ -794,7 +812,7 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
                   Designated Collection Point
                 </div>
                 <div className="text-sm font-bold text-white mt-0.5">
-                  {passenger?.collection_point || 'Mit Nama'}
+                  {passenger?.collection_point || (loading ? 'Loading...' : 'Not specified')}
                 </div>
               </div>
             </div>
@@ -808,7 +826,7 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
                   Designated Route
                 </div>
                 <div className="text-sm font-bold text-white mt-0.5">
-                  {passenger?.route || 'R5 - imbaba Ring road'}
+                  {passenger?.route || (loading ? 'Loading...' : 'Route not assigned')}
                 </div>
               </div>
             </div>
