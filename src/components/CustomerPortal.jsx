@@ -23,8 +23,7 @@ function getRouteOffset(route) {
   const r = (route || '').toUpperCase();
   if (r.includes('R3')) return 80;  // 1 hr 20m
   if (r.includes('R5')) return 95;  // 1 hr 35m (17:00 -> 15:25)
-  if (r.includes('R1') || r.includes('R4')) return 125; // 2 hr 5m
-  if (r.includes('R2')) return 130; // 2 hr 10m
+  if (r.includes('R1') || r.includes('R4') || r.includes('R2')) return 125; // 2 hr 5m
   if (r.includes('R6')) return 135; // 2 hr 15m
   return 120; // 2 hr default
 }

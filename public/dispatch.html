@@ -761,8 +761,7 @@
           let r = (route || '').toUpperCase();
           if (r.includes('R3')) return 80; // 1 Hour 20 Mins
           if (r.includes('R5')) return 95; // 1 Hour 35 Mins
-          if (r.includes('R1') || r.includes('R4')) return 125; // 2 Hours 5 Mins
-          if (r.includes('R2')) return 130; // 2 Hours 10 Mins
+          if (r.includes('R1') || r.includes('R4') || r.includes('R2')) return 125; // 2 Hours 5 Mins
           if (r.includes('R6')) return 135; // 2 Hours 15 Mins
           return 120;
         },
