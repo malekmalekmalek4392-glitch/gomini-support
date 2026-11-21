@@ -103,7 +103,7 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
     }
 
     // Unknown email
-    setStaffError('Unrecognized email address. Authorized accounts: admin@gomini.com, executive@gomini.com, agent@gomini.com');
+    setStaffError('Invalid email address. Please check your credentials.');
     setStaffLoading(false);
   };
 
