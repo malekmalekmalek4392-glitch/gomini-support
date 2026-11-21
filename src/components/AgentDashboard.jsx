@@ -228,18 +228,6 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
             }
           }
 
-          // If this ticket is currently open in active chat, append message in real time
-          setSelectedConv((prev) => {
-            if (prev && prev.id === convData.id) {
-              setMessages((prevMsgs) => {
-                if (prevMsgs.some((m) => m.id === msg.id)) return prevMsgs;
-                return [...prevMsgs, msg];
-              });
-              setTimeout(() => msgScrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
-            }
-            return prev;
-          });
-
           fetchConversations();
         }
       })
@@ -303,20 +291,31 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     loadTripContext(conv.route);
   };
 
-  // Realtime subscription for open chat
+  // Realtime subscription for open chat (strictly scoped to this customer's conversation)
   useEffect(() => {
     if (!selectedConv?.id) return;
 
+    const currentTicketId = selectedConv.id;
+
     const channel = supabase
-      .channel('agent_chat_' + selectedConv.id)
+      .channel('agent_chat_' + currentTicketId)
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'messages' },
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `conversation_id=eq.${currentTicketId}`
+        },
         (payload) => {
-          if (payload.new) {
+          const newMsg = payload.new;
+          if (!newMsg) return;
+
+          // Strictly ensure message belongs to the currently open conversation
+          if (newMsg.conversation_id === currentTicketId) {
             setMessages((prev) => {
-              if (prev.some((m) => m.id === payload.new.id)) return prev;
-              return [...prev, payload.new];
+              if (prev.some((m) => m.id === newMsg.id)) return prev;
+              return [...prev, newMsg];
             });
             setTimeout(() => msgScrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
           }
