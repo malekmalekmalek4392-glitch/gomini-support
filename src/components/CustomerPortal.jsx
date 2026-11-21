@@ -393,6 +393,22 @@ export default function CustomerPortal({ onSwitchToAgent }) {
             </div>
           )}
 
+          {/* Quick Access to Admin, Executive & Agent Views */}
+          <div className="hidden sm:flex items-center gap-1.5">
+            <a
+              href="/dispatch.html?view=admin"
+              className="text-xs font-bold text-blue-300 hover:text-white bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 px-2.5 py-1.5 rounded-xl transition-all"
+            >
+              Admin Dispatch →
+            </a>
+            <a
+              href="/dispatch.html?view=executive"
+              className="text-xs font-bold text-purple-300 hover:text-white bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 px-2.5 py-1.5 rounded-xl transition-all"
+            >
+              Executive View →
+            </a>
+          </div>
+
           <button
             onClick={onSwitchToAgent}
             className="flex items-center gap-1.5 text-xs font-bold text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 px-3 py-1.5 rounded-xl transition-all"
