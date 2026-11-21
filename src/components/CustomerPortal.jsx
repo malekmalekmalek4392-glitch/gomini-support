@@ -359,14 +359,11 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
       {/* Top Header - Exact Match to Screenshot */}
       <header className="h-16 bg-[#0B132B]/95 backdrop-blur-md border-b border-slate-800 px-4 sm:px-8 flex items-center justify-between sticky top-0 z-30">
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <span className="h-8 w-8 rounded-xl bg-pink-500 flex items-center justify-center font-black text-xs text-white shadow-md shadow-pink-500/20">
-              GM
-            </span>
-            <span className="font-black text-xl text-white tracking-wide">
-              go<span className="text-pink-500">mini.</span>
-            </span>
-          </div>
+          <img 
+            src="/app-icon.png" 
+            alt="GoMini Logo" 
+            className="h-10 w-10 rounded-xl object-contain shadow-md shadow-cyan-500/20" 
+          />
 
           <div className="h-4 w-px bg-slate-700 hidden sm:block"></div>
 
