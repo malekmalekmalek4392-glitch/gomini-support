@@ -192,9 +192,12 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
             }
           }
 
-          // If this ticket is currently open in active view, sync its assignment
+          // If this ticket is currently open in active view, sync its assignment or close if resolved
           setSelectedConv((prev) => {
             if (prev && prev.id === conv.id) {
+              if (conv.status === 'resolved') {
+                return null; // Close chat view when ticket is resolved
+              }
               return { ...prev, ...conv };
             }
             return prev;
@@ -360,23 +363,38 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
   // Resolve Ticket
   const handleResolveTicket = async () => {
     if (!selectedConv) return;
-    await supabase
-      .from('conversations')
-      .update({
-        status: 'resolved',
-        resolved_at: new Date().toISOString()
-      })
-      .eq('id', selectedConv.id);
+    const targetConvId = selectedConv.id;
 
-    await supabase.from('messages').insert({
-      conversation_id: selectedConv.id,
-      sender_type: 'system',
-      sender_name: 'System',
-      body: `Ticket marked as Resolved by ${agentName}`
-    });
+    try {
+      // 1. Mark as resolved and clear agent assignment in DB
+      await supabase
+        .from('conversations')
+        .update({
+          status: 'resolved',
+          assigned_agent_id: null,
+          assigned_agent_name: null,
+          resolved_at: new Date().toISOString()
+        })
+        .eq('id', targetConvId);
 
-    setSelectedConv((prev) => ({ ...prev, status: 'resolved' }));
-    fetchConversations();
+      // 2. Add system confirmation message in conversation history
+      await supabase.from('messages').insert({
+        conversation_id: targetConvId,
+        sender_type: 'system',
+        sender_name: 'System',
+        body: `Ticket marked as Resolved by ${agentName || 'Agent'}`
+      });
+
+      // 3. Immediately close chat from agent view so it returns to ticket queue
+      setSelectedConv(null);
+      setMessages([]);
+      setShowRiderInfo(false);
+
+      // 4. Refresh conversation queues
+      await fetchConversations();
+    } catch (err) {
+      console.error('Error resolving ticket:', err);
+    }
   };
 
   // Send Message
@@ -781,6 +799,21 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
                       <span className="hidden xs:inline">{agentLang === 'ar' ? 'تم الحل' : 'Resolve'}</span>
                     </button>
                   )}
+
+                  {/* Close Chat button (Available on all screens) */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedConv(null);
+                      setMessages([]);
+                      setShowRiderInfo(false);
+                    }}
+                    className="p-1.5 rounded-xl text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-700 border border-slate-700/60 transition-all flex items-center justify-center shrink-0 cursor-pointer"
+                    title={agentLang === 'ar' ? 'إغلاق المحادثة' : 'Close chat'}
+                    aria-label="Close chat"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
 
