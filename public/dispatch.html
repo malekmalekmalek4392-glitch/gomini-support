@@ -344,6 +344,104 @@
           }
         },
 
+        applyData(response) {
+          console.log('[Dispatch] Applying data:', response);
+          this.days = response.days || [];
+          this.data = response.rows || [];
+          this.allRoutes = (response.allRoutes && response.allRoutes.length > 0)
+            ? response.allRoutes
+            : Array.from(new Set((response.rows || []).map(r => r.Route).filter(Boolean))).sort();
+          this.areaToCP = response.areaToCP || {};
+          if (this.days.length > 0) {
+            this.selectedDay = this.days[0];
+            this.tempPriorityDay = this.days[0];
+          }
+          if (this.currentUser && this.currentUser.role === 'customer') {
+            this.customerPax = this.matchCustomerPax(this.currentUser.identifier || this.currentUser.eid || this.currentUser.phone);
+          }
+          this.loading = false;
+        },
+
+        async loadFromSupabase() {
+          console.log('[Dispatch] Loading from Supabase...');
+          try {
+            const SUPABASE_URL = 'https://lieswywjbwwrcvqxzbqu.supabase.co';
+            const SUPABASE_KEY = 'sb_publishable_Df2HG5pJun11Qaj9W_4KIQ_Hl8RXgTW';
+            const res = await fetch(SUPABASE_URL + '/rest/v1/roster?select=*', {
+              headers: {
+                'apikey': SUPABASE_KEY,
+                'Authorization': 'Bearer ' + SUPABASE_KEY
+              }
+            });
+            const roster = await res.json();
+            console.log('[Dispatch] Supabase roster loaded:', roster.length);
+            if (!Array.isArray(roster) || roster.length === 0) {
+              this.loading = false;
+              return;
+            }
+
+            const daySet = new Set();
+            roster.forEach(item => {
+              if (item.schedules && typeof item.schedules === 'object') {
+                Object.keys(item.schedules).forEach(d => daySet.add(d));
+              }
+            });
+
+            const dayOrder = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+            const days = Array.from(daySet).sort((a, b) => {
+              const ia = dayOrder.findIndex(d => a.toLowerCase().includes(d.toLowerCase()));
+              const ib = dayOrder.findIndex(d => b.toLowerCase().includes(d.toLowerCase()));
+              return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+            });
+
+            const rows = roster.map(item => {
+              return {
+                'Employee ID': item.employee_id,
+                'Employee Name': item.name,
+                'Mobile': item.phone,
+                'Final Route': item.route,
+                'Route': item.route,
+                'Collection Point': item.collection_point,
+                'Area': item.collection_point,
+                'Gender': 'Male',
+                ...(item.schedules || {})
+              };
+            });
+
+            const allRoutes = Array.from(new Set(rows.map(r => r.Route).filter(Boolean))).sort();
+
+            this.applyData({
+              days,
+              rows,
+              allRoutes,
+              areaToCP: {}
+            });
+          } catch (err) {
+            console.error('[Dispatch] Error loading from Supabase:', err);
+            this.loading = false;
+          }
+        },
+
+        listenToSupabaseRealtime() {
+          try {
+            if (typeof supabase !== 'undefined' && supabase.createClient) {
+              const client = supabase.createClient(
+                'https://lieswywjbwwrcvqxzbqu.supabase.co',
+                'sb_publishable_Df2HG5pJun11Qaj9W_4KIQ_Hl8RXgTW'
+              );
+              client.channel('live_dispatch_channel')
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'roster' }, () => {
+                  console.log('[Dispatch] Realtime change detected, reloading...');
+                  this.loadFromSupabase();
+                })
+                .subscribe();
+            }
+          } catch(e) {
+            console.warn('[Dispatch] Realtime warning:', e);
+          }
+        },
+
+
         normalizePhone(p) {
           if (!p) return '';
           return String(p).replace(/[^0-9]/g, '');
