@@ -15,7 +15,8 @@ import {
   RefreshCw,
   Sparkles,
   ShieldCheck,
-  CheckCircle2
+  CheckCircle2,
+  ArrowLeft
 } from 'lucide-react';
 
 // Route offset in minutes for calculating pickup times from shift times
@@ -196,12 +197,21 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
     };
   }, [conversation?.id]);
 
-  const handleSendMessage = async (e) => {
-    e?.preventDefault();
-    if (!inputMsg.trim() || sendingMsg || !passenger) return;
+  // Scroll to latest message whenever chat drawer is opened
+  useEffect(() => {
+    if (showChat) {
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 150);
+    }
+  }, [showChat]);
+
+  // Generic send message function that supports both typed text and quick prompt buttons
+  const sendMessageWithText = async (rawText) => {
+    if (!rawText || !rawText.trim() || sendingMsg || !passenger) return;
 
     setSendingMsg(true);
-    const body = inputMsg.trim();
+    const body = rawText.trim();
     setInputMsg('');
 
     try {
@@ -237,12 +247,16 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
         .update({ last_message: body, updated_at: new Date().toISOString() })
         .eq('id', conv.id);
 
-      // Bot auto-reply
+      // Intelligent Bot Auto-Reply with real route and station awareness
       setTimeout(async () => {
         let reply = "Hello! A GoMini dispatch support agent has received your request and will assist you shortly.";
         const bLower = body.toLowerCase();
-        if (bLower.includes('bus') || bLower.includes('where')) {
-          reply = `Your vehicle for ${passenger.route} is HI-ACE (2H) scheduled at ${passenger.collection_point || 'your station'}. Captain will arrive on schedule.`;
+        if (bLower.includes('bus') || bLower.includes('where') || bLower.includes('shuttle')) {
+          reply = `Your shuttle for ${passenger.route || 'your designated route'} is scheduled according to your weekly plan. Pickup at ${passenger.collection_point || 'your station'}. A support agent will assist if you need real-time GPS.`;
+        } else if (bLower.includes('missed')) {
+          reply = "If you missed your scheduled shuttle, please alert your shift coordinator immediately. We are checking vehicle rotations to see if alternative boarding is available.";
+        } else if (bLower.includes('issue') || bLower.includes('report') || bLower.includes('ac') || bLower.includes('driver') || bLower.includes('lost')) {
+          reply = "We apologize for any trouble. Please describe the issue below, and our support team will handle it immediately.";
         } else if (bLower.includes('delay') || bLower.includes('late')) {
           reply = `We've flagged your report for ${passenger.name} (${passenger.employee_id}). Operations is tracking the vehicle status right now.`;
         }
@@ -260,6 +274,15 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
     } finally {
       setSendingMsg(false);
     }
+  };
+
+  const handleSendMessage = (e) => {
+    e?.preventDefault();
+    sendMessageWithText(inputMsg);
+  };
+
+  const handleSendPresetMessage = (presetText) => {
+    sendMessageWithText(presetText);
   };
 
   // Convert raw schedules into strictly sorted 7-Day Commute Plan (Saturday -> Friday)
@@ -608,10 +631,11 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
       </main>
 
       {/* Floating Support Chat Button */}
-      <div className="fixed bottom-6 right-6 z-40">
+      <div className={`fixed bottom-6 right-6 z-40 ${showChat ? 'hidden sm:block' : 'block'}`}>
         <button
           onClick={() => setShowChat(!showChat)}
-          className="h-14 w-14 rounded-full bg-gradient-to-r from-pink-500 to-rose-600 hover:from-pink-600 hover:to-rose-700 text-white flex items-center justify-center shadow-xl shadow-pink-500/30 transition-all transform hover:scale-105 active:scale-95"
+          aria-label={showChat ? 'Close Support Chat' : 'Open Support Chat'}
+          className="h-14 w-14 rounded-full bg-gradient-to-r from-pink-500 to-rose-600 hover:from-pink-600 hover:to-rose-700 text-white flex items-center justify-center shadow-xl shadow-pink-500/30 transition-all transform hover:scale-105 active:scale-95 cursor-pointer"
         >
           {showChat ? <X className="w-6 h-6" /> : <MessageSquare className="w-6 h-6" />}
         </button>
@@ -619,84 +643,153 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
 
       {/* Slide-over Live Support Drawer */}
       {showChat && (
-        <div className="fixed inset-y-0 right-0 w-full sm:w-96 bg-[#0B132B] border-l border-slate-800 shadow-2xl z-50 flex flex-col animate-in slide-in-from-right duration-200">
-          {/* Chat Header */}
-          <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-[#080E24]">
-            <div className="flex items-center gap-3">
-              <div className="h-9 w-9 rounded-xl bg-pink-500/20 border border-pink-500/30 flex items-center justify-center text-pink-400">
-                <Sparkles className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="text-sm font-bold text-white">GoMini Support</h4>
-                <p className="text-[11px] text-emerald-400 flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  AI Agent & Dispatch Team Online
-                </p>
-              </div>
-            </div>
+        <>
+          {/* Chat Backdrop for mobile & desktop */}
+          <div
+            onClick={() => setShowChat(false)}
+            className="fixed inset-0 bg-black/60 backdrop-blur-[2px] z-45 transition-opacity"
+            aria-hidden="true"
+          />
 
-            <button
-              onClick={() => setShowChat(false)}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-all"
+          <div
+            className="fixed inset-0 sm:inset-y-0 sm:right-0 sm:left-auto w-full sm:w-96 bg-[#0B132B] sm:border-l border-slate-800 shadow-2xl z-50 flex flex-col h-[100dvh] sm:h-screen animate-in slide-in-from-right duration-200"
+          >
+            {/* Chat Header with safe-area padding for mobile notches/dynamic island */}
+            <div
+              className="px-4 py-3 sm:p-4 border-b border-slate-800 flex items-center justify-between bg-[#080E24] shrink-0"
+              style={{
+                paddingTop: 'max(env(safe-area-inset-top, 0px) + 8px, 16px)'
+              }}
             >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-
-          {/* Messages Body */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            {messages.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400">
-                <div className="h-12 w-12 rounded-2xl bg-slate-800/80 flex items-center justify-center text-slate-500 mb-3">
-                  <MessageSquare className="w-6 h-6" />
+              <div className="flex items-center gap-2.5 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setShowChat(false)}
+                  className="sm:hidden p-1.5 -ml-1 rounded-xl text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700 border border-slate-700/60 transition-all shrink-0 active:scale-95 cursor-pointer"
+                  title="Back"
+                  aria-label="Back"
+                >
+                  <ArrowLeft className="w-5 h-5 text-slate-200" />
+                </button>
+                <div className="h-9 w-9 rounded-xl bg-pink-500/20 border border-pink-500/30 flex items-center justify-center text-pink-400 shrink-0">
+                  <Sparkles className="w-5 h-5" />
                 </div>
-                <p className="text-xs font-semibold text-slate-300">How can we help your commute today?</p>
-                <p className="text-[11px] text-slate-500 mt-1">Ask about bus location, report a delay, or request assistance.</p>
+                <div className="min-w-0">
+                  <h4 className="text-sm font-bold text-white truncate leading-tight">GoMini Support</h4>
+                  <p className="text-[11px] text-emerald-400 flex items-center gap-1.5 mt-0.5 truncate">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
+                    AI Agent & Dispatch Online
+                  </p>
+                </div>
               </div>
-            ) : (
-              messages.map((m) => {
-                const isPax = m.sender_type === 'passenger';
-                return (
-                  <div key={m.id} className={`flex flex-col ${isPax ? 'items-end' : 'items-start'}`}>
-                    <span className="text-[10px] text-slate-500 mb-0.5 px-1 font-medium">
-                      {isPax ? 'You' : m.sender_name || 'Support'}
-                    </span>
-                    <div
-                      className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-xs ${
-                        isPax
-                          ? 'bg-gradient-to-r from-pink-500 to-rose-600 text-white rounded-tr-none shadow-md shadow-pink-500/10'
-                          : 'bg-[#0F1B3E] text-slate-200 border border-slate-700/60 rounded-tl-none'
-                      }`}
-                    >
-                      {m.body}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-            <div ref={messagesEndRef} />
-          </div>
 
-          {/* Chat Input */}
-          <form onSubmit={handleSendMessage} className="p-3 border-t border-slate-800 bg-[#080E24]">
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={inputMsg}
-                onChange={(e) => setInputMsg(e.target.value)}
-                placeholder="Ask about your bus, route, or timing..."
-                className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-base sm:text-xs text-white placeholder-slate-500 focus:outline-none focus:border-pink-500"
-              />
+              {/* Close Button X - Prominently visible and styled */}
               <button
-                type="submit"
-                disabled={sendingMsg || !inputMsg.trim()}
-                className="p-2 rounded-xl bg-pink-500 hover:bg-pink-600 disabled:opacity-40 text-white transition-all shadow-md shadow-pink-500/20"
+                type="button"
+                onClick={() => setShowChat(false)}
+                className="h-9 w-9 rounded-full bg-slate-800/90 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 border border-slate-700 hover:border-rose-500/40 flex items-center justify-center transition-all shadow-md active:scale-90 shrink-0 cursor-pointer"
+                title="Close chat"
+                aria-label="Close chat"
               >
-                <Send className="w-4 h-4" />
+                <X className="w-5 h-5 stroke-[2.5]" />
               </button>
             </div>
-          </form>
-        </div>
+
+            {/* Messages Body */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
+              {messages.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400">
+                  <div className="h-12 w-12 rounded-2xl bg-slate-800/80 flex items-center justify-center text-slate-500 mb-3">
+                    <MessageSquare className="w-6 h-6" />
+                  </div>
+                  <p className="text-xs font-semibold text-slate-300">How can we help your commute today?</p>
+                  <p className="text-[11px] text-slate-500 mt-1">Tap a quick action below or ask about bus location, report a delay, or request assistance.</p>
+                </div>
+              ) : (
+                messages.map((m) => {
+                  const isPax = m.sender_type === 'passenger';
+                  return (
+                    <div key={m.id} className={`flex flex-col ${isPax ? 'items-end' : 'items-start'}`}>
+                      <span className="text-[10px] text-slate-500 mb-0.5 px-1 font-medium">
+                        {isPax ? 'You' : m.sender_name || 'Support'}
+                      </span>
+                      <div
+                        className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-xs ${
+                          isPax
+                            ? 'bg-gradient-to-r from-pink-500 to-rose-600 text-white rounded-tr-none shadow-md shadow-pink-500/10'
+                            : 'bg-[#0F1B3E] text-slate-200 border border-slate-700/60 rounded-tl-none'
+                        }`}
+                      >
+                        {m.body}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Quick Action Chips for Fast Mobile Responses */}
+            <div className="px-3 py-2 bg-[#080E24]/90 border-t border-slate-800/60 flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0">
+              <button
+                type="button"
+                onClick={() => handleSendPresetMessage('Where is my shuttle bus?')}
+                className="px-3 py-1.5 rounded-full text-xs font-medium bg-slate-800/90 hover:bg-pink-500/20 text-slate-300 hover:text-pink-300 border border-slate-700/80 hover:border-pink-500/40 whitespace-nowrap transition-all active:scale-95 shrink-0 cursor-pointer"
+              >
+                🚌 Where is my bus?
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSendPresetMessage('I missed my shuttle bus!')}
+                className="px-3 py-1.5 rounded-full text-xs font-medium bg-slate-800/90 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 border border-slate-700/80 hover:border-rose-500/40 whitespace-nowrap transition-all active:scale-95 shrink-0 cursor-pointer"
+              >
+                ⚠️ Missed my shuttle
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSendPresetMessage('I want to report an issue (AC, Driver, Delay, Lost Item).')}
+                className="px-3 py-1.5 rounded-full text-xs font-medium bg-slate-800/90 hover:bg-amber-500/20 text-slate-300 hover:text-amber-300 border border-slate-700/80 hover:border-amber-500/40 whitespace-nowrap transition-all active:scale-95 shrink-0 cursor-pointer"
+              >
+                💬 Report an issue
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSendPresetMessage('Is the shuttle delayed?')}
+                className="px-3 py-1.5 rounded-full text-xs font-medium bg-slate-800/90 hover:bg-cyan-500/20 text-slate-300 hover:text-cyan-300 border border-slate-700/80 hover:border-cyan-500/40 whitespace-nowrap transition-all active:scale-95 shrink-0 cursor-pointer"
+              >
+                ⏰ Trip delay?
+              </button>
+            </div>
+
+            {/* Chat Input with Safe-area Bottom Inset */}
+            <form
+              onSubmit={handleSendMessage}
+              className="p-3 border-t border-slate-800 bg-[#080E24] shrink-0"
+              style={{
+                paddingBottom: 'max(env(safe-area-inset-bottom, 0px) + 8px, 14px)'
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={inputMsg}
+                  onChange={(e) => setInputMsg(e.target.value)}
+                  placeholder="Ask about your bus, route, or timing..."
+                  className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-base sm:text-xs text-white placeholder-slate-500 focus:outline-none focus:border-pink-500"
+                />
+                <button
+                  type="submit"
+                  disabled={sendingMsg || !inputMsg.trim()}
+                  className="h-10 w-10 flex items-center justify-center rounded-xl bg-pink-500 hover:bg-pink-600 disabled:opacity-40 text-white transition-all shadow-md shadow-pink-500/20 active:scale-95 shrink-0 cursor-pointer"
+                  title="Send message"
+                  aria-label="Send message"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              </div>
+            </form>
+          </div>
+        </>
       )}
     </div>
   );
