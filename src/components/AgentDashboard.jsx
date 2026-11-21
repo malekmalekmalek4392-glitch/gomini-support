@@ -27,7 +27,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     const saved = localStorage.getItem('gomini_agent_id');
     return saved && saved !== '00000000-0000-0000-0000-000000000001' ? saved : 'd3737431-70c9-43ec-b330-4160d21402ca';
   });
-  const [agentLang, setAgentLang] = useState(() => localStorage.getItem('gomini_agent_lang') || localStorage.getItem('gomini_chat_lang') || 'en');
+  const [agentLang, setAgentLang] = useState(() => localStorage.getItem('gomini_agent_lang') || 'en');
 
   const [activeTab, setActiveTab] = useState('unassigned'); // 'unassigned', 'mine', 'resolved'
   const [conversations, setConversations] = useState([]);

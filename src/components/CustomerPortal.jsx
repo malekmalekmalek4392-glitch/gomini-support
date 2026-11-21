@@ -933,17 +933,52 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
                 </div>
               ) : (
                 messages.map((m) => {
+                  if (m.sender_type === 'system') {
+                    return (
+                      <div key={m.id} className="text-center my-2">
+                        <span className="text-[11px] bg-slate-800/80 text-slate-400 px-3 py-1 rounded-full border border-slate-700/60 font-medium inline-block">
+                          {m.body}
+                        </span>
+                      </div>
+                    );
+                  }
+
                   const isPax = m.sender_type === 'passenger';
+                  const isBot = m.sender_type === 'bot';
+                  const isAgent = m.sender_type === 'agent';
+
+                  let senderLabel = '';
+                  if (isPax) {
+                    senderLabel = chatLang === 'ar' ? '👤 أنت' : '👤 You';
+                  } else if (isBot) {
+                    senderLabel = chatLang === 'ar' ? '🤖 الرد الآلي (GoMini Bot)' : '🤖 GoMini Bot (Automated)';
+                  } else if (isAgent) {
+                    senderLabel = chatLang === 'ar'
+                      ? `🧑‍💼 موظف خدمة العملاء (${m.sender_name || 'الدعم'})`
+                      : `🧑‍💼 Support Agent (${m.sender_name || 'Support'})`;
+                  } else {
+                    senderLabel = m.sender_name || 'Support';
+                  }
+
                   return (
-                    <div key={m.id} className={`flex flex-col ${isPax ? (chatLang === 'ar' ? 'items-start' : 'items-end') : (chatLang === 'ar' ? 'items-end' : 'items-start')}`}>
-                      <span className="text-[10px] text-slate-500 mb-0.5 px-1 font-medium">
-                        {isPax ? (chatLang === 'ar' ? 'أنت' : 'You') : (chatLang === 'ar' ? 'خدمة العملاء' : (m.sender_name || 'Support'))}
+                    <div
+                      key={m.id}
+                      className={`flex flex-col ${
+                        isPax
+                          ? (chatLang === 'ar' ? 'items-start' : 'items-end')
+                          : (chatLang === 'ar' ? 'items-end' : 'items-start')
+                      }`}
+                    >
+                      <span className="text-[10px] text-slate-400 mb-0.5 px-1 font-semibold">
+                        {senderLabel}
                       </span>
                       <div
                         className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-xs whitespace-pre-line leading-relaxed ${
                           isPax
                             ? 'bg-gradient-to-r from-pink-500 to-rose-600 text-white rounded-tr-none shadow-md shadow-pink-500/10'
-                            : 'bg-[#0F1B3E] text-slate-200 border border-slate-700/60 rounded-tl-none'
+                            : isBot
+                            ? 'bg-[#0F1B3E] text-slate-200 border border-slate-700/60 rounded-tl-none'
+                            : 'bg-indigo-950 text-indigo-100 border border-indigo-500/50 rounded-tl-none shadow-sm'
                         }`}
                       >
                         {m.body}
