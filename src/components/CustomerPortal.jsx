@@ -299,9 +299,14 @@ export default function CustomerPortal({ onSwitchToAgent }) {
       const startShift = parts[0] ? parts[0].trim() : '17:00';
       const endShift = parts[1] ? parts[1].trim() : '02:00';
 
+      const isPassengerFemale = (passenger.schedules && String(passenger.schedules._gender || '').toLowerCase().startsWith('f')) ||
+        String(passenger.gender || '').toLowerCase().startsWith('f');
+      const isVIP = (passenger.employee_id === '3328570') || (passenger.name && passenger.name.toLowerCase().includes('mohammad gamal'));
+      const isEligibleD2D = isPassengerFemale || isVIP;
+
       const pickupTime = calculatePickupTime(startShift, passenger.route);
-      const isD2DTo = checkIsD2D(startShift, 'To Office');
-      const isD2DFrom = checkIsD2D(endShift, 'From Office');
+      const isD2DTo = isEligibleD2D && checkIsD2D(startShift, 'To Office');
+      const isD2DFrom = isEligibleD2D && checkIsD2D(endShift, 'From Office');
 
       return {
         day,

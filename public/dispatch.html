@@ -671,15 +671,22 @@
 
         isD2DExempt(row) {
           if (!row) return false;
-          let name = String(row['Name'] || row['name'] || '').toLowerCase();
-          return name.includes('toqa nashaat') || name.includes('toka nashaat') || name.includes('تقي نشأت') || name.includes('تقى نشأت') ||
-            name.includes('hoda magdy') || name.includes('houda magdy') || name.includes('huda magdy') || name.includes('هدى سعودي') || name.includes('هدي سعودي') || name.includes('هدى مجدي') || name.includes('هدي مجدي') ||
-            name.includes('rokaya reda') || name.includes('roqaya reda') || name.includes('rokaia reda') || name.includes('رقيه رضا') || name.includes('رقية رضا');
+          // Door-to-Door is only exempt if passenger explicitly opted out in DTD column
+          const dtd = String(row['DTD'] || row['dtd'] || (row.schedules && row.schedules._dtd) || '').trim().toLowerCase();
+          if (dtd === 'no' || dtd === 'opt-out' || dtd === 'exempt' || dtd === 'false') return true;
+          return false;
         },
 
         getGender(row) {
           if (!row) return 'U';
-          let name = (row['Name'] || row['name'] || '').toLowerCase();
+          const directGender = row['Gender'] || row['gender'] || row['_gender'] || (row.schedules && row.schedules._gender);
+          if (directGender) {
+            const val = String(directGender).trim().toUpperCase();
+            if (val.startsWith('F') || val.startsWith('W') || ['أنثى', 'انثى', 'انثي', 'سيدة', 'آنسة', 'انسة', 'بنت'].includes(val)) return 'F';
+            if (val.startsWith('M') || ['ذكر', 'رجل'].includes(val)) return 'M';
+          }
+
+          let name = (row['Name'] || row['Employee Name'] || row['name'] || '').toLowerCase();
 
           // Specific female passenger overrides
           if (name.includes('toqa') || name.includes('toka') || name.includes('تقي') || name.includes('تقى') ||
@@ -691,7 +698,7 @@
           // Check gender in row (all column variations)
           for (const k of Object.keys(row)) {
             const lk = k.trim().toLowerCase();
-            if (['gender', 'sex', 'النوع', 'الجنس'].includes(lk)) {
+            if (['gender', 'sex', 'النوع', 'الجنس', '_gender'].includes(lk)) {
               const val = String(row[k] || '').trim().toUpperCase();
               if (val.startsWith('F') || val.startsWith('W') || ['أنثى', 'انثى', 'انثي', 'سيدة', 'آنسة', 'انسة', 'بنت'].includes(val)) return 'F';
               if (val.startsWith('M') || ['ذكر', 'رجل'].includes(val)) return 'M';
