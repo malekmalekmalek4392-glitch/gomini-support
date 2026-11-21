@@ -168,7 +168,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
         if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
           const conv = payload.new;
           const isUnassigned = !conv.assigned_agent_id && conv.status !== 'resolved';
-          const needsAgent = conv.category === 'needs_agent' || conv.category === 'issue' || conv.category === 'missed_bus';
+          const needsAgent = conv.category === 'complaint' || conv.category === 'missed_bus';
 
           // ONLY trigger chime & popup notification when chatbot CANNOT answer automatically!
           if (isUnassigned && needsAgent) {
@@ -211,17 +211,33 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     };
   }, [activeTab, agentId]);
 
-  // Load Messages for selected ticket
-  const loadMessages = async (convId) => {
-    const { data } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('conversation_id', convId)
-      .order('created_at', { ascending: true });
+  // Load Messages for selected ticket (with complete history across all past tickets & agents)
+  const loadMessages = async (conv) => {
+    if (!conv) return;
+    try {
+      let convIds = [conv.id];
+      if (conv.employee_id) {
+        const { data: siblingConvs } = await supabase
+          .from('conversations')
+          .select('id')
+          .eq('employee_id', conv.employee_id);
+        if (siblingConvs && siblingConvs.length > 0) {
+          convIds = siblingConvs.map((c) => c.id);
+        }
+      }
 
-    if (data) {
-      setMessages(data);
-      setTimeout(() => msgScrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+      const { data } = await supabase
+        .from('messages')
+        .select('*')
+        .in('conversation_id', convIds)
+        .order('created_at', { ascending: true });
+
+      if (data) {
+        setMessages(data);
+        setTimeout(() => msgScrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+      }
+    } catch (e) {
+      console.warn('Error loading messages:', e);
     }
   };
 
@@ -244,7 +260,7 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
 
   const handleSelectConversation = (conv) => {
     setSelectedConv(conv);
-    loadMessages(conv.id);
+    loadMessages(conv);
     loadTripContext(conv.route);
   };
 
@@ -256,10 +272,15 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
       .channel('agent_chat_' + selectedConv.id)
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${selectedConv.id}` },
+        { event: 'INSERT', schema: 'public', table: 'messages' },
         (payload) => {
-          setMessages((prev) => [...prev, payload.new]);
-          setTimeout(() => msgScrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+          if (payload.new) {
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === payload.new.id)) return prev;
+              return [...prev, payload.new];
+            });
+            setTimeout(() => msgScrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+          }
         }
       )
       .subscribe();
@@ -403,7 +424,12 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     if (!inputMsg.trim() || !selectedConv) return;
 
     // Enforce claiming check before sending
-    if (selectedConv.assigned_agent_id && selectedConv.assigned_agent_id !== agentId) {
+    if (!selectedConv.assigned_agent_id) {
+      alert(agentLang === 'ar' ? 'يجب استلام التذكرة أولاً قبل الرد.' : 'Please claim the ticket first before replying.');
+      return;
+    }
+
+    if (selectedConv.assigned_agent_id !== agentId) {
       alert(agentLang === 'ar' ? 'هذه التذكرة مستلمة بواسطة موظف آخر.' : 'This ticket is claimed by another agent.');
       return;
     }
@@ -412,12 +438,20 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
     setInputMsg('');
     setShowCanned(false);
 
-    await supabase.from('messages').insert({
+    const { data: sentMsg } = await supabase.from('messages').insert({
       conversation_id: selectedConv.id,
       sender_type: 'agent',
       sender_name: agentName,
       body: body
-    });
+    }).select().single();
+
+    if (sentMsg) {
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === sentMsg.id)) return prev;
+        return [...prev, sentMsg];
+      });
+      setTimeout(() => msgScrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+    }
 
     await supabase
       .from('conversations')

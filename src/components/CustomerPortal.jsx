@@ -139,25 +139,41 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
     }
   };
 
-  // Chat conversation loader
+  // Chat conversation loader (Keeps full history across all past tickets & agents)
   useEffect(() => {
     if (!passenger) return;
 
     const fetchChat = async () => {
-      const { data } = await supabase
-        .from('conversations')
-        .select('*')
-        .eq('employee_id', passenger.employee_id)
-        .in('status', ['open', 'pending'])
-        .order('id', { ascending: false })
-        .limit(1);
+      try {
+        // Fetch passenger's conversations (any status: open, pending, or resolved!)
+        const { data: convs } = await supabase
+          .from('conversations')
+          .select('*')
+          .eq('employee_id', passenger.employee_id)
+          .order('id', { ascending: false });
 
-      if (data && data.length > 0) {
-        setConversation(data[0]);
-        loadMessages(data[0].id);
-      } else {
-        setConversation(null);
-        setMessages([]);
+        if (convs && convs.length > 0) {
+          // Set active conversation to the latest one
+          setConversation(convs[0]);
+
+          // Load all messages across all this passenger's conversations
+          const convIds = convs.map((c) => c.id);
+          const { data: msgs } = await supabase
+            .from('messages')
+            .select('*')
+            .in('conversation_id', convIds)
+            .order('created_at', { ascending: true });
+
+          if (msgs) {
+            setMessages(msgs);
+            setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+          }
+        } else {
+          setConversation(null);
+          setMessages([]);
+        }
+      } catch (err) {
+        console.warn('Error loading chat history:', err);
       }
     };
 
@@ -185,13 +201,15 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
       .channel('chat_msg_' + conversation.id)
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conversation.id}` },
+        { event: 'INSERT', schema: 'public', table: 'messages' },
         (payload) => {
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === payload.new.id)) return prev;
-            return [...prev, payload.new];
-          });
-          setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+          if (payload.new && payload.new.conversation_id === conversation.id) {
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === payload.new.id)) return prev;
+              return [...prev, payload.new];
+            });
+            setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+          }
         }
       )
       .subscribe();
@@ -210,35 +228,70 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
     }
   }, [showChat]);
 
-  // Helper to detect passenger intent for chatbot automation vs agent escalations
+  // Helper to detect passenger intent with database-compliant category constraints
   const analyzeMessageIntent = (text) => {
     const t = (text || '').toLowerCase().trim();
 
-    // Explicit issues or human agent request triggers:
+    // 1. Missed bus -> Escalate to human agent
     const isMissed = t.includes('miss') || t.includes('فاتني') || t.includes('ملحقتش') || t.includes('راح عليا');
-    const isIssue = t.includes('issue') || t.includes('complaint') || t.includes('problem') || t.includes('ac') || t.includes('air') || t.includes('driver') || t.includes('lost') || t.includes('مشكلة') || t.includes('شكوى') || t.includes('تكييف') || t.includes('سائق') || t.includes('نسيت') || t.includes('مفقود') || t.includes('عطل');
-    const isAgentReq = t.includes('agent') || t.includes('human') || t.includes('employee') || t.includes('person') || t.includes('موظف') || t.includes('خدمة') || t.includes('حد يكلمني') || t.includes('مساعدة');
-
-    if (isMissed || isIssue || isAgentReq) {
-      return { canBotAnswer: false, intent: 'needs_agent' };
+    if (isMissed) {
+      return { canBotAnswer: false, intent: 'missed_bus', category: 'missed_bus' };
     }
 
-    // Commute timing, bus location, schedule, or delay inquiries:
+    // 2. Complaints / Service issues -> Escalate to human agent
+    const isComplaint =
+      t.includes('issue') ||
+      t.includes('complaint') ||
+      t.includes('problem') ||
+      t.includes('ac') ||
+      t.includes('air') ||
+      t.includes('driver') ||
+      t.includes('lost') ||
+      t.includes('مشكلة') ||
+      t.includes('شكوى') ||
+      t.includes('تكييف') ||
+      t.includes('سائق') ||
+      t.includes('نسيت') ||
+      t.includes('مفقود') ||
+      t.includes('عطل') ||
+      t.includes('agent') ||
+      t.includes('human') ||
+      t.includes('employee') ||
+      t.includes('person') ||
+      t.includes('موظف') ||
+      t.includes('خدمة') ||
+      t.includes('حد يكلمني') ||
+      t.includes('مساعدة');
+
+    if (isComplaint) {
+      return { canBotAnswer: false, intent: 'complaint', category: 'complaint' };
+    }
+
+    // 3. Where is my bus -> Automated reply
     const isWhereBus = t.includes('where') || t.includes('bus') || t.includes('shuttle') || t.includes('فين') || t.includes('مكان') || t.includes('الأتوبيس') || t.includes('الاتوبيس') || t.includes('الباص') || t.includes('العربية');
-    const isSchedule = t.includes('schedule') || t.includes('time') || t.includes('timing') || t.includes('shift') || t.includes('when') || t.includes('pickup') || t.includes('موعد') || t.includes('مواعيد') || t.includes('جدول') || t.includes('وردية') || t.includes('ميعاد') || t.includes('امتى') || t.includes('التحرك');
+    if (isWhereBus) {
+      return { canBotAnswer: true, intent: 'where_is_bus', category: 'where_is_bus' };
+    }
+
+    // 4. Delay inquiry -> Automated reply
     const isDelay = t.includes('delay') || t.includes('late') || t.includes('traffic') || t.includes('متأخر') || t.includes('تأخير') || t.includes('زحمة');
-
-    if (isWhereBus || isSchedule || isDelay) {
-      return { canBotAnswer: true, intent: 'commute_info' };
+    if (isDelay) {
+      return { canBotAnswer: true, intent: 'delay', category: 'delay' };
     }
 
-    // Common greetings
+    // 5. Schedule / Timing inquiry -> Automated reply
+    const isSchedule = t.includes('schedule') || t.includes('time') || t.includes('timing') || t.includes('shift') || t.includes('when') || t.includes('pickup') || t.includes('موعد') || t.includes('مواعيد') || t.includes('جدول') || t.includes('وردية') || t.includes('ميعاد') || t.includes('امتى') || t.includes('التحرك');
+    if (isSchedule) {
+      return { canBotAnswer: true, intent: 'schedule', category: 'where_is_bus' };
+    }
+
+    // 6. Common greetings -> Automated reply
     if (t === 'hi' || t === 'hello' || t === 'hey' || t === 'مرحبا' || t === 'سلام' || t === 'السلام عليكم') {
-      return { canBotAnswer: true, intent: 'greeting' };
+      return { canBotAnswer: true, intent: 'greeting', category: 'general' };
     }
 
-    // Default unhandled requests to human agent
-    return { canBotAnswer: false, intent: 'needs_agent' };
+    // Default unknown messages escalate to human support
+    return { canBotAnswer: false, intent: 'needs_agent', category: 'complaint' };
   };
 
   // Generic send message function that supports both typed text and quick prompt buttons
@@ -250,12 +303,27 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
     setInputMsg('');
 
     try {
-      const { canBotAnswer, intent } = analyzeMessageIntent(body);
-      const category = canBotAnswer ? 'automated' : 'needs_agent';
+      const { canBotAnswer, intent, category } = analyzeMessageIntent(body);
 
       let conv = conversation;
       if (!conv) {
-        const { data } = await supabase
+        // Check if an existing conversation exists in DB for this employee
+        const { data: existing } = await supabase
+          .from('conversations')
+          .select('*')
+          .eq('employee_id', passenger.employee_id)
+          .order('id', { ascending: false })
+          .limit(1);
+
+        if (existing && existing.length > 0) {
+          conv = existing[0];
+          setConversation(existing[0]);
+        }
+      }
+
+      if (!conv) {
+        // Create new conversation with strictly valid category
+        const { data: newRow, error: insErr } = await supabase
           .from('conversations')
           .insert({
             employee_id: passenger.employee_id,
@@ -272,9 +340,14 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
           .select()
           .single();
 
-        conv = data;
-        setConversation(data);
+        if (insErr) {
+          console.error('Failed to create conversation:', insErr);
+          return;
+        }
+        conv = newRow;
+        setConversation(newRow);
       } else {
+        // Conversation already exists (whether open, pending, or resolved!)
         const updatePayload = {
           status: 'open',
           last_message: body,
@@ -282,28 +355,46 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
           category: category
         };
 
-        // If human assistance is needed or if ticket was previously resolved,
-        // reset assigned agent so it goes immediately to UNASSIGNED for agents!
+        // When ticket was previously resolved OR when human assistance is needed,
+        // clear assigned agent so it appears directly in the UNASSIGNED area for all agents!
         if (!canBotAnswer || conv.status === 'resolved') {
           updatePayload.assigned_agent_id = null;
           updatePayload.assigned_agent_name = null;
         }
 
-        await supabase
+        const { error: updErr } = await supabase
           .from('conversations')
           .update(updatePayload)
           .eq('id', conv.id);
 
-        setConversation((prev) => ({ ...prev, ...updatePayload }));
+        if (updErr) {
+          console.error('Failed to update conversation:', updErr);
+        } else {
+          setConversation((prev) => ({ ...prev, ...updatePayload }));
+        }
       }
 
+      if (!conv?.id) return;
+
       // 1. Insert Passenger message
-      await supabase.from('messages').insert({
-        conversation_id: conv.id,
-        sender_type: 'passenger',
-        sender_name: passenger.name,
-        body: body
-      });
+      const { data: paxMsg } = await supabase
+        .from('messages')
+        .insert({
+          conversation_id: conv.id,
+          sender_type: 'passenger',
+          sender_name: passenger.name,
+          body: body
+        })
+        .select()
+        .single();
+
+      if (paxMsg) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === paxMsg.id)) return prev;
+          return [...prev, paxMsg];
+        });
+        setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+      }
 
       // 2. Query live trip context for this route
       let tripData = null;
@@ -359,12 +450,24 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
 
       // 5. Insert bot reply
       setTimeout(async () => {
-        await supabase.from('messages').insert({
-          conversation_id: conv.id,
-          sender_type: 'bot',
-          sender_name: 'GoMini Bot',
-          body: botReply
-        });
+        const { data: bMsg } = await supabase
+          .from('messages')
+          .insert({
+            conversation_id: conv.id,
+            sender_type: 'bot',
+            sender_name: 'GoMini Bot',
+            body: botReply
+          })
+          .select()
+          .single();
+
+        if (bMsg) {
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === bMsg.id)) return prev;
+            return [...prev, bMsg];
+          });
+          setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+        }
       }, 450);
 
     } catch (err) {
