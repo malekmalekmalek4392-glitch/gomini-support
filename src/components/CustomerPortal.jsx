@@ -379,42 +379,14 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Search EID or Name */}
-          <form onSubmit={handleSearch} className="relative hidden md:block">
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search EID (e.g. 3367295)..."
-              className="bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-1.5 pl-8 text-xs text-white focus:outline-none focus:border-cyan-500 w-52 transition-all"
-            />
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
-          </form>
-
           {passenger && (
             <div className="flex items-center gap-2 bg-slate-900/90 px-3.5 py-1.5 rounded-full border border-slate-800 text-xs text-slate-300 shadow-sm">
               <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
-              <span className="font-bold text-white truncate max-w-[170px] sm:max-w-[220px]">
+              <span className="font-bold text-white truncate max-w-[200px] sm:max-w-[260px]">
                 {passenger.name}
               </span>
             </div>
           )}
-
-          {/* Quick Access to Admin, Executive & Agent Views */}
-          <div className="hidden sm:flex items-center gap-1.5">
-            <a
-              href="/dispatch.html?view=admin"
-              className="text-xs font-bold text-blue-300 hover:text-white bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 px-2.5 py-1.5 rounded-xl transition-all"
-            >
-              Admin Dispatch →
-            </a>
-            <a
-              href="/dispatch.html?view=executive"
-              className="text-xs font-bold text-purple-300 hover:text-white bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 px-2.5 py-1.5 rounded-xl transition-all"
-            >
-              Executive View →
-            </a>
-          </div>
 
           <button
             onClick={onSignOut || onSwitchToAgent}

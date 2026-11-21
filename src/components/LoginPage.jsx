@@ -163,9 +163,11 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
       {/* Top Brand Header */}
       <header className="border-b border-slate-800/80 bg-[#091124]/70 backdrop-blur-md sticky top-0 z-30 px-4 sm:px-8 py-3.5 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-cyan-600 via-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/20 text-white font-black text-xl tracking-wider">
-            G
-          </div>
+          <img 
+            src="/app-icon.png" 
+            alt="GoMini Logo" 
+            className="h-10 w-10 rounded-xl object-cover shadow-lg shadow-cyan-500/20" 
+          />
           <div>
             <div className="flex items-center gap-2">
               <span className="font-black text-base sm:text-lg tracking-tight text-white">GoMini</span>
@@ -194,7 +196,12 @@ export default function LoginPage({ onCustomerLogin, onAgentLogin }) {
           
           {/* Card Headline */}
           <div className="text-center mb-6">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs font-bold text-cyan-400 mb-3 shadow-sm">
+            <img 
+              src="/app-icon.png" 
+              alt="GoMini Logo" 
+              className="h-16 w-16 rounded-2xl object-cover shadow-2xl shadow-blue-500/30 mx-auto mb-3 border border-slate-700/60" 
+            />
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs font-bold text-cyan-400 mb-2 shadow-sm">
               <Sparkles className="w-3.5 h-3.5" />
               <span>Unified Access Portal</span>
             </div>
