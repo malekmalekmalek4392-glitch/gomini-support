@@ -868,15 +868,25 @@ export default function AgentDashboard({ onSwitchToPassenger, onSignOut, agentNa
                     );
                   }
 
+                  const isMe = isAgent && m.sender_name && agentName && m.sender_name.trim().toLowerCase() === agentName.trim().toLowerCase();
+
                   return (
                     <div key={m.id} className={`flex flex-col ${isAgent ? 'items-end' : 'items-start'}`}>
                       <div className="text-[10px] text-slate-400 font-semibold mb-1 px-1">
-                        {isAgent ? `🧑‍💼 You (${m.sender_name})` : isBot ? '🤖 Bot Auto-Answer' : `👤 ${m.sender_name}`}
+                        {isMe
+                          ? (agentLang === 'ar' ? `🧑‍💼 أنت (${agentName})` : `🧑‍💼 You (${agentName})`)
+                          : isAgent
+                          ? `🧑‍💼 ${m.sender_name || 'Agent'}`
+                          : isBot
+                          ? '🤖 Bot Auto-Answer'
+                          : `👤 ${m.sender_name}`}
                       </div>
                       <div
                         className={`max-w-[85%] sm:max-w-[70%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-sm whitespace-pre-line ${
-                          isAgent
+                          isMe
                             ? 'bg-purple-600 text-white rounded-tr-none'
+                            : isAgent
+                            ? 'bg-slate-800 text-purple-200 border border-purple-500/40 rounded-tr-none'
                             : isBot
                             ? 'bg-slate-800 text-slate-200 border border-slate-700 rounded-tl-none'
                             : 'bg-slate-950 text-slate-100 border border-slate-800 rounded-tl-none'
