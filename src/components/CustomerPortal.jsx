@@ -415,8 +415,6 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
     setInputMsg('');
 
     try {
-      const { canBotAnswer, intent, category } = analyzeMessageIntent(body);
-
       let conv = conversation;
       if (!conv) {
         // Check if an existing conversation exists in DB for this employee
@@ -433,6 +431,30 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
         }
       }
 
+      // Check if ticket is currently claimed and active with a human agent
+      const isCurrentlyWithAgent = Boolean(
+        conv?.assigned_agent_name &&
+        conv?.status !== 'resolved'
+      );
+
+      // Determine bot answer capability (Chatbot is completely silent if ticket is with an agent)
+      let canBotAnswer = false;
+      let intent = 'needs_agent';
+      let category = 'complaint';
+
+      if (!isCurrentlyWithAgent) {
+        const analysis = analyzeMessageIntent(body);
+        canBotAnswer = analysis.canBotAnswer;
+        intent = analysis.intent;
+        category = analysis.category;
+      }
+
+      // If answered by bot -> status is 'resolved' so it NEVER clutters agent queues or notifies agents!
+      // If needs human agent -> status is 'open' so it enters the Unassigned queue and notifies agents!
+      const convStatus = isCurrentlyWithAgent
+        ? 'pending'
+        : (canBotAnswer ? 'resolved' : 'open');
+
       if (!conv) {
         // Create new conversation with strictly valid category
         const { data: newRow, error: insErr } = await supabase
@@ -443,7 +465,7 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
             passenger_phone: passenger.phone,
             route: passenger.route,
             category: category,
-            status: 'open',
+            status: convStatus,
             assigned_agent_id: null,
             assigned_agent_name: null,
             last_message: body,
@@ -459,18 +481,16 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
         conv = newRow;
         setConversation(newRow);
       } else {
-        // Conversation already exists (whether open, pending, or resolved!)
+        // Conversation already exists
         const updatePayload = {
-          status: 'open',
+          status: convStatus,
           last_message: body,
           last_message_at: new Date().toISOString(),
           category: category
         };
 
-        // ONLY clear agent assignment if the ticket was previously marked as RESOLVED!
-        // If an agent is already handling this ticket and has not resolved it,
-        // it strictly stays in that agent's "My Tickets" queue and never goes to unassigned.
-        if (conv.status === 'resolved') {
+        // If not with an agent, keep unassigned
+        if (!isCurrentlyWithAgent) {
           updatePayload.assigned_agent_id = null;
           updatePayload.assigned_agent_name = null;
         }
@@ -562,55 +582,59 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
       const captainName = tripData?.captain_name || (chatLang === 'ar' ? 'كابتن الخط المعتمد (فريق العمليات الميدانية)' : 'Certified Route Captain (Operations Team)');
       const captainPhone = tripData?.captain_phone || (chatLang === 'ar' ? 'متاح مباشرة عبر خط الدعم وغرفة العمليات 24/7' : 'Available via Operations Dispatch 24/7');
 
-      // 4. Formulate automated response in selected language
+      // 4. Formulate automated response in selected language (Chatbot NEVER answers if ticket is with a human agent)
       let botReply = '';
-      if (canBotAnswer) {
-        if (intent === 'thanks') {
-          botReply = chatLang === 'ar'
-            ? `عفواً يا فندم! يسعدنا ويشرفنا دائماً خدمتك وتسهيل تنقلك مع GoMini. إذا كان لديك أي استفسار آخر نحن دائماً في الخدمة. نتمنى لك رحلة سعيدة وآمنة! 🌟`
-            : `You're very welcome! We are always delighted to assist your daily commute with GoMini. If you need anything else, we're always here for you. Have a safe and pleasant trip! 🌟`;
-        } else if (intent === 'greeting') {
-          botReply = chatLang === 'ar'
-            ? `مرحباً ${passenger.name}! كيف يمكننا مساعدة تنقلك اليوم؟ اسأل عن مكان الأتوبيس، المواعيد، أو الإبلاغ عن أي استفسار.`
-            : `Hello ${passenger.name}! How can we help your commute today? You can ask about your bus schedule, trip times, or report an issue.`;
-        } else {
-          // Commute Details (Where is bus / Schedule / Delay)
-          if (chatLang === 'ar') {
-            botReply = `📍 تفاصيل رحلتك لخط (${passenger.route || 'خطك المخصص'}):\n• موعد رحلة الذهاب للمكتب: ${toTripTime} (بداية الوردية: ${toShiftTime})\n• موعد رحلة العودة من المكتب: ${fromTripTime} (نهاية الوردية: ${fromShiftTime})\n• نقطة الركوب: ${pickupStation}\n\n⚠️ يرجى التواجد في نقطة الركوب قبل موعد الرحلة بـ 5 دقائق.\n\n🚌 رقم ونوع السيارة: ${carDescription}\n👤 كابتن الرحلة: ${captainName}\n📞 هاتف الكابتن: ${captainPhone}\n\nفريق التحكم وغرفة العمليات يتابع حركة الخط مباشرة.`;
+      if (!isCurrentlyWithAgent) {
+        if (canBotAnswer) {
+          if (intent === 'thanks') {
+            botReply = chatLang === 'ar'
+              ? `عفواً يا فندم! يسعدنا ويشرفنا دائماً خدمتك وتسهيل تنقلك مع GoMini. إذا كان لديك أي استفسار آخر نحن دائماً في الخدمة. نتمنى لك رحلة سعيدة وآمنة! 🌟`
+              : `You're very welcome! We are always delighted to assist your daily commute with GoMini. If you need anything else, we're always here for you. Have a safe and pleasant trip! 🌟`;
+          } else if (intent === 'greeting') {
+            botReply = chatLang === 'ar'
+              ? `مرحباً ${passenger.name}! كيف يمكننا مساعدة تنقلك اليوم؟ اسأل عن مكان الأتوبيس، المواعيد، أو الإبلاغ عن أي استفسار.`
+              : `Hello ${passenger.name}! How can we help your commute today? You can ask about your bus schedule, trip times, or report an issue.`;
           } else {
-            botReply = `📍 Shuttle Details for ${passenger.route || 'your designated route'}:\n• To Office Trip Time: ${toTripTime} (Shift: ${toShiftTime})\n• From Office Trip Time: ${fromTripTime} (Shift: ${fromShiftTime})\n• Pickup Location: ${pickupStation}\n\n⚠️ Please be at pickup point 5 minutes before trip time.\n\n🚌 Car / Vehicle: ${carDescription}\n👤 Captain: ${captainName}\n📞 Captain Phone: ${captainPhone}\n\nOur dispatch operations team is tracking this route live.`;
+            // Commute Details (Where is bus / Schedule / Delay)
+            if (chatLang === 'ar') {
+              botReply = `📍 تفاصيل رحلتك لخط (${passenger.route || 'خطك المخصص'}):\n• موعد رحلة الذهاب للمكتب: ${toTripTime} (بداية الوردية: ${toShiftTime})\n• موعد رحلة العودة من المكتب: ${fromTripTime} (نهاية الوردية: ${fromShiftTime})\n• نقطة الركوب: ${pickupStation}\n\n⚠️ يرجى التواجد في نقطة الركوب قبل موعد الرحلة بـ 5 دقائق.\n\n🚌 رقم ونوع السيارة: ${carDescription}\n👤 كابتن الرحلة: ${captainName}\n📞 هاتف الكابتن: ${captainPhone}\n\nفريق التحكم وغرفة العمليات يتابع حركة الخط مباشرة.`;
+            } else {
+              botReply = `📍 Shuttle Details for ${passenger.route || 'your designated route'}:\n• To Office Trip Time: ${toTripTime} (Shift: ${toShiftTime})\n• From Office Trip Time: ${fromTripTime} (Shift: ${fromShiftTime})\n• Pickup Location: ${pickupStation}\n\n⚠️ Please be at pickup point 5 minutes before trip time.\n\n🚌 Car / Vehicle: ${carDescription}\n👤 Captain: ${captainName}\n📞 Captain Phone: ${captainPhone}\n\nOur dispatch operations team is tracking this route live.`;
+            }
           }
-        }
-      } else {
-        // Needs Human Support Agent (Issue / Missed bus / complex inquiry)
-        if (chatLang === 'ar') {
-          botReply = `نعتذر عن أي مشكلة أو إزعاج. تم تحويل استفسارك لغرفة العمليات وسنقوم بتوصيلك بأحد ممثلي الدعم فوراً لمساعدتك.`;
         } else {
-          botReply = `We apologize for any trouble. We have alerted our dispatch team and will connect you to a support agent shortly to assist you.`;
+          // Escalation note when human support agent is needed
+          if (chatLang === 'ar') {
+            botReply = `نعتذر عن أي مشكلة أو إزعاج. تم تحويل استفسارك لغرفة العمليات وسنقوم بتوصيلك بأحد ممثلي الدعم فوراً لمساعدتك.`;
+          } else {
+            botReply = `We apologize for any trouble. We have alerted our dispatch team and will connect you to a support agent shortly to assist you.`;
+          }
         }
       }
 
-      // 5. Insert bot reply
-      setTimeout(async () => {
-        const { data: bMsg } = await supabase
-          .from('messages')
-          .insert({
-            conversation_id: conv.id,
-            sender_type: 'bot',
-            sender_name: 'GoMini Bot',
-            body: botReply
-          })
-          .select()
-          .single();
+      // 5. Insert bot reply if one was formulated
+      if (botReply) {
+        setTimeout(async () => {
+          const { data: bMsg } = await supabase
+            .from('messages')
+            .insert({
+              conversation_id: conv.id,
+              sender_type: 'bot',
+              sender_name: 'GoMini Bot',
+              body: botReply
+            })
+            .select()
+            .single();
 
-        if (bMsg) {
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === bMsg.id)) return prev;
-            return [...prev, bMsg];
-          });
-          setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
-        }
-      }, 450);
+          if (bMsg) {
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === bMsg.id)) return prev;
+              return [...prev, bMsg];
+            });
+            setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+          }
+        }, 450);
+      }
 
     } catch (err) {
       console.error(err);
@@ -1184,6 +1208,13 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
 
             {/* Quick Action Chips for Fast Mobile Responses */}
             <div className="px-3 py-2 bg-[#080E24]/90 border-t border-slate-800/60 flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0">
+              <button
+                type="button"
+                onClick={() => handleSendPresetMessage(chatLang === 'ar' ? 'أريد التحدث مع موظف خدمة العملاء' : 'I want to speak with a customer support agent')}
+                className="px-3 py-1.5 rounded-full text-xs font-bold bg-purple-600/30 hover:bg-purple-600 text-purple-200 hover:text-white border border-purple-500/50 whitespace-nowrap transition-all active:scale-95 shrink-0 cursor-pointer shadow-sm"
+              >
+                {chatLang === 'ar' ? '🧑‍💼 التحدث مع موظف الدعم' : '🧑‍💼 Speak to Agent'}
+              </button>
               <button
                 type="button"
                 onClick={() => handleSendPresetMessage(chatLang === 'ar' ? 'أين الأتوبيس الخاص بي؟' : 'Where is my shuttle bus?')}
