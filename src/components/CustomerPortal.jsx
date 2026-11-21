@@ -355,9 +355,10 @@ export default function CustomerPortal({ onSwitchToAgent, onSignOut, initialPass
           category: category
         };
 
-        // When ticket was previously resolved OR when human assistance is needed,
-        // clear assigned agent so it appears directly in the UNASSIGNED area for all agents!
-        if (!canBotAnswer || conv.status === 'resolved') {
+        // ONLY clear agent assignment if the ticket was previously marked as RESOLVED!
+        // If an agent is already handling this ticket and has not resolved it,
+        // it strictly stays in that agent's "My Tickets" queue and never goes to unassigned.
+        if (conv.status === 'resolved') {
           updatePayload.assigned_agent_id = null;
           updatePayload.assigned_agent_name = null;
         }
