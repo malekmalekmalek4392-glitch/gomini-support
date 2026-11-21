@@ -7,23 +7,22 @@ import {
   Printer,
   MapPin,
   Navigation,
-  CheckCircle,
-  AlertTriangle,
-  HelpCircle,
   MessageSquare,
   Send,
   X,
   Search,
   LogOut,
   RefreshCw,
-  Sparkles
+  Sparkles,
+  ShieldCheck,
+  CheckCircle2
 } from 'lucide-react';
 
 // Route offset in minutes for calculating pickup times from shift times
 function getRouteOffset(route) {
   const r = (route || '').toUpperCase();
   if (r.includes('R3')) return 80;  // 1 hr 20m
-  if (r.includes('R5')) return 95;  // 1 hr 35m
+  if (r.includes('R5')) return 95;  // 1 hr 35m (17:00 -> 15:25)
   if (r.includes('R1') || r.includes('R4')) return 125; // 2 hr 5m
   if (r.includes('R2')) return 130; // 2 hr 10m
   if (r.includes('R6')) return 135; // 2 hr 15m
@@ -32,20 +31,35 @@ function getRouteOffset(route) {
 
 function calculatePickupTime(shiftTimeStr, route) {
   if (!shiftTimeStr || !shiftTimeStr.includes(':')) return shiftTimeStr;
-  const [h, m] = shiftTimeStr.split(':').map(Number);
+  const parts = shiftTimeStr.split(':').map(Number);
+  const h = parts[0];
+  const m = parts[1] || 0;
   const offset = getRouteOffset(route);
-  let totalMins = h * 60 + (m || 0) - offset;
+  let totalMins = h * 60 + m - offset;
   if (totalMins < 0) totalMins += 24 * 60;
   const ph = Math.floor(totalMins / 60) % 24;
   const pm = totalMins % 60;
   return `${ph < 10 ? '0' + ph : ph}:${pm < 10 ? '0' + pm : pm}`;
 }
 
+// Check if a given time hour falls within Door-to-Door window
+function checkIsD2D(timeStr, direction) {
+  if (!timeStr || !timeStr.includes(':')) return false;
+  const h = parseInt(timeStr.split(':')[0], 10);
+  if (direction === 'To Office') {
+    // Arrival between 12:00 AM (0) and 6:00 AM
+    return h >= 0 && h <= 6;
+  } else {
+    // Departure between 11:00 PM (23) and 5:00 AM
+    return h === 23 || (h >= 0 && h <= 5);
+  }
+}
+
 export default function CustomerPortal({ onSwitchToAgent }) {
   const [passenger, setPassenger] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searching, setSearching] = useState(false);
   const [allRoster, setAllRoster] = useState([]);
+  const [loading, setLoading] = useState(true);
 
   // Chat State
   const [showChat, setShowChat] = useState(false);
@@ -55,14 +69,14 @@ export default function CustomerPortal({ onSwitchToAgent }) {
   const [sendingMsg, setSendingMsg] = useState(false);
   const messagesEndRef = useRef(null);
 
-  // Load initial roster from Supabase
+  // Load roster from Supabase
   const loadRoster = async () => {
     try {
       const { data, error } = await supabase.from('roster').select('*');
       if (!error && data && data.length > 0) {
         setAllRoster(data);
 
-        // Check if there is a saved EID in localStorage
+        // Saved EID or default to Abdulrahman Nawar (3367295)
         const savedEid = localStorage.getItem('gomini_active_eid') || '3367295';
         const match = data.find(
           (p) => String(p.employee_id).includes(savedEid) || String(p.name).toLowerCase().includes('nawar')
@@ -74,17 +88,19 @@ export default function CustomerPortal({ onSwitchToAgent }) {
         }
       }
     } catch (e) {
-      console.error(e);
+      console.error('Error fetching roster:', e);
+    } finally {
+      setLoading(false);
     }
   };
 
   useEffect(() => {
     loadRoster();
 
-    // Realtime listener on roster table: whenever sheet updates, screen updates live!
+    // Realtime WebSocket subscription on roster table
     const channel = supabase
-      .channel('roster_live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'roster' }, (payload) => {
+      .channel('roster_live_channel')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'roster' }, () => {
         loadRoster();
       })
       .subscribe();
@@ -94,7 +110,7 @@ export default function CustomerPortal({ onSwitchToAgent }) {
     };
   }, []);
 
-  // Handle Search EID or Name
+  // Search by EID or Name
   const handleSearch = (e) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
@@ -103,7 +119,7 @@ export default function CustomerPortal({ onSwitchToAgent }) {
       (p) =>
         String(p.employee_id).toLowerCase().includes(q) ||
         String(p.name).toLowerCase().includes(q) ||
-        String(p.phone).includes(q)
+        String(p.phone).replace(/[^0-9]/g, '').includes(q.replace(/[^0-9]/g, ''))
     );
 
     if (found) {
@@ -115,7 +131,7 @@ export default function CustomerPortal({ onSwitchToAgent }) {
     }
   };
 
-  // Load active chat when passenger changes
+  // Chat conversation loader
   useEffect(() => {
     if (!passenger) return;
 
@@ -153,12 +169,12 @@ export default function CustomerPortal({ onSwitchToAgent }) {
     }
   };
 
-  // Realtime subscription for open chat
+  // Realtime subscription for active chat
   useEffect(() => {
     if (!conversation?.id) return;
 
     const channel = supabase
-      .channel('pax_conv_' + conversation.id)
+      .channel('chat_msg_' + conversation.id)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conversation.id}` },
@@ -177,7 +193,6 @@ export default function CustomerPortal({ onSwitchToAgent }) {
     };
   }, [conversation?.id]);
 
-  // Send message
   const handleSendMessage = async (e) => {
     e?.preventDefault();
     if (!inputMsg.trim() || sendingMsg || !passenger) return;
@@ -202,23 +217,41 @@ export default function CustomerPortal({ onSwitchToAgent }) {
           })
           .select()
           .single();
+
         conv = data;
         setConversation(data);
       }
 
-      if (conv) {
+      await supabase.from('messages').insert({
+        conversation_id: conv.id,
+        sender_type: 'passenger',
+        sender_name: passenger.name,
+        body: body
+      });
+
+      await supabase
+        .from('conversations')
+        .update({ last_message: body, updated_at: new Date().toISOString() })
+        .eq('id', conv.id);
+
+      // Bot auto-reply
+      setTimeout(async () => {
+        let reply = "Hello! A GoMini dispatch support agent has received your request and will assist you shortly.";
+        const bLower = body.toLowerCase();
+        if (bLower.includes('bus') || bLower.includes('where')) {
+          reply = `Your vehicle for ${passenger.route} is HI-ACE (2H) scheduled at ${passenger.collection_point || 'your station'}. Captain will arrive on schedule.`;
+        } else if (bLower.includes('delay') || bLower.includes('late')) {
+          reply = `We've flagged your report for ${passenger.name} (${passenger.employee_id}). Operations is tracking the vehicle status right now.`;
+        }
+
         await supabase.from('messages').insert({
           conversation_id: conv.id,
-          sender_type: 'passenger',
-          sender_name: passenger.name,
-          body: body
+          sender_type: 'bot',
+          sender_name: 'GoMini Bot',
+          body: reply
         });
+      }, 500);
 
-        await supabase
-          .from('conversations')
-          .update({ last_message: body, last_message_at: new Date().toISOString(), status: 'open' })
-          .eq('id', conv.id);
-      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -226,83 +259,24 @@ export default function CustomerPortal({ onSwitchToAgent }) {
     }
   };
 
-  const handleQuickAction = async (actionKey) => {
-    if (!passenger) return;
-    let userText = '';
-    let botReply = '';
+  // Convert raw schedules into strictly sorted 7-Day Commute Plan (Saturday -> Friday)
+  const renderWeeklyPlan = () => {
+    const rawSched = passenger?.schedules || passenger?.schedule;
+    if (!passenger || !rawSched) return [];
 
-    if (actionKey === 'where_is_bus') {
-      userText = 'Where is my shuttle bus?';
-      botReply = `Your assigned route is [${passenger.route}]. Designated pickup station: ${passenger.collection_point || 'Designated Station'}. Driver details are displayed on your live trip card.`;
-    } else if (actionKey === 'delay') {
-      userText = 'Is the shuttle delayed?';
-      botReply = `According to our dispatch matrix, operations are currently on schedule. If traffic occurs, your driver will notify the route channel.`;
-    } else if (actionKey === 'missed') {
-      userText = 'I missed my shuttle bus!';
-      botReply = `If you missed your scheduled departure, please contact your shift supervisor immediately to arrange alternate boarding on the next rotation.`;
-    } else if (actionKey === 'issue') {
-      userText = 'I want to report an issue (AC, Driver, Delay, Lost item).';
-      botReply = `Please type the details of your issue below, and our support team will handle it immediately.`;
-    }
+    // Filter out internal metadata keys (like _gender, _dtd)
+    const validDays = Object.keys(rawSched).filter(k => !k.startsWith('_'));
 
-    let conv = conversation;
-    if (!conv) {
-      const { data } = await supabase
-        .from('conversations')
-        .insert({
-          employee_id: passenger.employee_id,
-          passenger_name: passenger.name,
-          passenger_phone: passenger.phone,
-          route: passenger.route,
-          category: actionKey,
-          status: 'open',
-          last_message: userText
-        })
-        .select()
-        .single();
-      conv = data;
-      setConversation(data);
-    }
-
-    if (!conv) return;
-
-    await supabase.from('messages').insert({
-      conversation_id: conv.id,
-      sender_type: 'passenger',
-      sender_name: passenger.name,
-      body: userText
+    // Strict chronological week sorting: Saturday -> Friday
+    const dayOrder = ['saturday', 'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday'];
+    validDays.sort((a, b) => {
+      const idxA = dayOrder.findIndex(d => a.toLowerCase().includes(d));
+      const idxB = dayOrder.findIndex(d => b.toLowerCase().includes(d));
+      return (idxA === -1 ? 99 : idxA) - (idxB === -1 ? 99 : idxB);
     });
 
-    setTimeout(async () => {
-      await supabase.from('messages').insert({
-        conversation_id: conv.id,
-        sender_type: 'bot',
-        sender_name: 'GoMini Bot',
-        body: botReply
-      });
-    }, 400);
-  };
-
-  // Convert raw passenger.schedules into 7-Day Commute Plan items
-  const renderWeeklyPlan = () => {
-    const sched = passenger?.schedules || passenger?.schedule;
-    if (!passenger || !sched) return [];
-
-    const defaultDays = [
-      'Saturday, Nov 14',
-      'Sunday, Nov 15',
-      'Monday, Nov 16',
-      'Tuesday, Nov 17',
-      'Wednesday, Nov 18',
-      'Thursday, Nov 19',
-      'Friday, Nov 20'
-    ];
-
-    const keys = Object.keys(sched);
-    const dayKeys = keys.length > 0 ? keys : defaultDays;
-
-    return dayKeys.map((day) => {
-      const shiftVal = String(sched[day] || '').trim();
+    return validDays.map((day) => {
+      const shiftVal = String(rawSched[day] || '').trim();
       const sv = shiftVal.toUpperCase();
       const isOff =
         !shiftVal ||
@@ -327,6 +301,8 @@ export default function CustomerPortal({ onSwitchToAgent }) {
       const endShift = parts[1] ? parts[1].trim() : '02:00';
 
       const pickupTime = calculatePickupTime(startShift, passenger.route);
+      const isD2DTo = checkIsD2D(startShift, 'To Office');
+      const isD2DFrom = checkIsD2D(endShift, 'From Office');
 
       return {
         day,
@@ -339,7 +315,7 @@ export default function CustomerPortal({ onSwitchToAgent }) {
             tripTime: pickupTime,
             vehicle: 'HI-ACE (2H)',
             collectionPoint: passenger.collection_point || 'Designated Station',
-            isD2D: false
+            isD2D: isD2DTo
           },
           {
             direction: 'From Office',
@@ -347,7 +323,7 @@ export default function CustomerPortal({ onSwitchToAgent }) {
             tripTime: endShift,
             vehicle: 'HI-ACE (2H)',
             collectionPoint: passenger.collection_point || 'Designated Station',
-            isD2D: true
+            isD2D: isD2DFrom
           }
         ]
       };
@@ -356,45 +332,84 @@ export default function CustomerPortal({ onSwitchToAgent }) {
 
   const weeklyPlan = renderWeeklyPlan();
 
+  const handlePrint = () => {
+    window.print();
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#070D1E] flex flex-col items-center justify-center p-6 text-slate-300">
+        <div className="h-10 w-10 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+        <p className="text-sm font-semibold tracking-wide">Loading Commute Schedule...</p>
+      </div>
+    );
+  }
+
+  const cleanPhone = String(passenger?.phone || '').replace(/^=/, '').trim();
+
   return (
-    <div className="flex-1 text-slate-100 flex flex-col font-sans selection:bg-pink-500/30">
-      {/* Sub Header / Search & Active Passenger */}
-      <div className="bg-[#0B132B]/60 border-b border-slate-800/80 px-4 sm:px-8 py-3 flex items-center justify-between">
+    <div className="min-h-screen bg-[#070D1E] text-slate-100 flex flex-col font-sans selection:bg-pink-500/30">
+      {/* Top Header - Exact Match to Screenshot */}
+      <header className="h-16 bg-[#0B132B]/95 backdrop-blur-md border-b border-slate-800 px-4 sm:px-8 flex items-center justify-between sticky top-0 z-30">
         <div className="flex items-center gap-3">
-          <span className="text-xs font-bold text-slate-300">Customer Timetable</span>
-          <span className="text-slate-600">•</span>
-          <span className="text-xs text-slate-400">7-Day Personalized Commute Plan</span>
+          <div className="flex items-center gap-2">
+            <span className="h-8 w-8 rounded-xl bg-pink-500 flex items-center justify-center font-black text-xs text-white shadow-md shadow-pink-500/20">
+              GM
+            </span>
+            <span className="font-black text-xl text-white tracking-wide">
+              go<span className="text-pink-500">mini.</span>
+            </span>
+          </div>
+
+          <div className="h-4 w-px bg-slate-700 hidden sm:block"></div>
+
+          <div>
+            <div className="text-xs font-bold text-white hidden sm:block">GoMini Mobility</div>
+            <div className="text-[10px] text-slate-400 font-medium tracking-wider uppercase">
+              Customer Schedule Portal
+            </div>
+          </div>
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Search EID */}
-          <form onSubmit={handleSearch} className="relative">
+          {/* Search EID or Name */}
+          <form onSubmit={handleSearch} className="relative hidden md:block">
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search EID (e.g. 3367295)..."
-              className="bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-1.5 pl-8 text-xs text-white focus:outline-none focus:border-cyan-500 w-48 sm:w-60"
+              className="bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-1.5 pl-8 text-xs text-white focus:outline-none focus:border-cyan-500 w-52 transition-all"
             />
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
           </form>
 
           {passenger && (
-            <div className="hidden sm:flex items-center gap-2 bg-slate-900/80 px-3 py-1.5 rounded-xl border border-slate-800 text-xs text-slate-300">
-              <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
-              <span className="font-bold text-white truncate max-w-[160px]">{passenger.name}</span>
+            <div className="flex items-center gap-2 bg-slate-900/90 px-3.5 py-1.5 rounded-full border border-slate-800 text-xs text-slate-300 shadow-sm">
+              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+              <span className="font-bold text-white truncate max-w-[170px] sm:max-w-[220px]">
+                {passenger.name}
+              </span>
             </div>
           )}
-        </div>
-      </div>
 
-      {/* Main Schedule Container */}
+          <button
+            onClick={onSwitchToAgent}
+            className="flex items-center gap-1.5 text-xs font-bold text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 px-3 py-1.5 rounded-xl transition-all"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Sign Out</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Main Container */}
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-8 sm:px-6 lg:px-8">
-        {/* Passenger Profile Card (Exact Match to Your Image) */}
+        {/* Passenger Profile Card (Exact Match to User Image) */}
         <div className="bg-[#0B1531] p-6 sm:p-8 rounded-3xl border border-slate-800 shadow-2xl mb-8 relative overflow-hidden">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
             <div className="flex items-center gap-4">
-              <div className="h-16 w-16 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white text-2xl font-black shadow-lg shadow-cyan-500/20">
+              <div className="h-16 w-16 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white text-2xl font-black shadow-lg shadow-cyan-500/20 shrink-0">
                 <span>{passenger?.name ? passenger.name.charAt(0).toUpperCase() : 'A'}</span>
               </div>
               <div>
@@ -409,8 +424,8 @@ export default function CustomerPortal({ onSwitchToAgent }) {
                 <h2 className="text-2xl sm:text-3xl font-black text-white">
                   {passenger?.name || 'Abdulrahman Nawar'}
                 </h2>
-                <p className="text-xs sm:text-sm text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
-                  <span>Phone: {passenger?.phone || '+20 (10) 33774966'}</span>
+                <p className="text-xs sm:text-sm text-slate-400 mt-1 flex items-center gap-2 flex-wrap">
+                  <span>Phone: {cleanPhone || '+20 (10) 33774966'}</span>
                   <span>•</span>
                   <span className="text-cyan-400 font-semibold">
                     {passenger?.route || 'R5 - imbaba Ring road'}
@@ -419,59 +434,62 @@ export default function CustomerPortal({ onSwitchToAgent }) {
               </div>
             </div>
 
-            <div className="flex sm:items-center gap-3">
-              <button
-                onClick={() => window.print()}
-                className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-900/90 hover:bg-slate-800 text-slate-300 border border-slate-700/80 transition-all flex items-center gap-2 shadow-sm"
-              >
-                <Printer className="w-4 h-4 text-slate-400" />
-                <span>Print Schedule</span>
-              </button>
-              <button
-                onClick={() => setShowChat(true)}
-                className="px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-pink-500 to-purple-600 hover:from-pink-600 hover:to-purple-700 text-white shadow-lg shadow-pink-500/25 transition-all flex items-center gap-2"
-              >
-                <MessageSquare className="w-4 h-4" />
-                <span>Need Help? Chat</span>
-              </button>
-            </div>
+            <button
+              onClick={handlePrint}
+              className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 text-xs font-bold text-slate-200 transition-all self-start md:self-auto shrink-0 shadow-sm"
+            >
+              <Printer className="w-4 h-4 text-cyan-400" />
+              <span>Print Schedule</span>
+            </button>
           </div>
 
-          {/* Designated Collection Point & Route Bar */}
-          <div className="mt-6 pt-6 border-t border-slate-800/80 grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="p-4 rounded-2xl bg-[#080E24] border border-slate-800/80">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                Designated Collection Point
-              </span>
-              <span className="text-sm font-bold text-white flex items-center gap-2">
-                <MapPin className="w-4 h-4 text-cyan-400" />
-                <span>{passenger?.collection_point || 'Mit Nama'}</span>
-              </span>
+          {/* Sub Cards: Designated Collection Point & Route */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-6 pt-6 border-t border-slate-800/80">
+            <div className="p-4 rounded-2xl bg-[#080E24] border border-slate-800 flex items-center gap-3">
+              <div className="h-10 w-10 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 shrink-0">
+                <MapPin className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  Designated Collection Point
+                </div>
+                <div className="text-sm font-bold text-white mt-0.5">
+                  {passenger?.collection_point || 'Mit Nama'}
+                </div>
+              </div>
             </div>
 
-            <div className="p-4 rounded-2xl bg-[#080E24] border border-slate-800/80">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                Designated Route
-              </span>
-              <span className="text-sm font-bold text-white flex items-center gap-2">
-                <Navigation className="w-4 h-4 text-blue-400" />
-                <span>{passenger?.route || 'R5 - imbaba Ring road'}</span>
-              </span>
+            <div className="p-4 rounded-2xl bg-[#080E24] border border-slate-800 flex items-center gap-3">
+              <div className="h-10 w-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 shrink-0">
+                <Navigation className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  Designated Route
+                </div>
+                <div className="text-sm font-bold text-white mt-0.5">
+                  {passenger?.route || 'R5 - imbaba Ring road'}
+                </div>
+              </div>
             </div>
           </div>
         </div>
 
         {/* Weekly Commute Schedule Header */}
-        <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-          <h3 className="text-lg font-bold text-white flex items-center gap-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-6">
+          <div className="flex items-center gap-2">
             <Clock className="w-5 h-5 text-cyan-400" />
-            <span>Weekly Commute Schedule (Saturday - Friday)</span>
-          </h3>
-          <span className="text-xs text-slate-400 font-medium">Please be at your pickup point 5 mins prior</span>
+            <h3 className="text-lg sm:text-xl font-bold text-white">
+              Weekly Commute Schedule (Saturday – Friday)
+            </h3>
+          </div>
+          <span className="text-xs text-slate-400 font-medium">
+            Please be at your pickup point 5 mins prior
+          </span>
         </div>
 
-        {/* 7-Day Commute Schedule Cards */}
-        <div className="space-y-4 mb-16">
+        {/* 7-Day Commute Grid */}
+        <div className="space-y-4 mb-20">
           {weeklyPlan.map((item) => (
             <div
               key={item.day}
@@ -501,10 +519,10 @@ export default function CustomerPortal({ onSwitchToAgent }) {
                 )}
               </div>
 
-              {/* Day Content */}
+              {/* Day Body */}
               {item.isOff ? (
                 <div className="p-6 text-center text-slate-400 text-xs">
-                  <span>No commute scheduled for this day (Roster: <strong className="text-slate-300">OFF</strong>). Have a great day off!</span>
+                  <span>No commute scheduled for this day (Roster: <strong className="text-slate-300">OFF</strong>). Enjoy your day off!</span>
                 </div>
               ) : (
                 <div className="p-6 space-y-4">
@@ -523,11 +541,11 @@ export default function CustomerPortal({ onSwitchToAgent }) {
                             }`}
                           >
                             {isTo ? (
-                              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                                 <path d="m18 15-6-6-6 6" />
                               </svg>
                             ) : (
-                              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                                 <path d="m6 9 6 6 6-6" />
                               </svg>
                             )}
@@ -558,21 +576,33 @@ export default function CustomerPortal({ onSwitchToAgent }) {
                           </div>
                         </div>
 
-                        {/* Metadata Badges */}
-                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
-                          <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800">
-                            <span className="text-[10px] font-bold text-slate-400 block uppercase">Shift Time</span>
-                            <span className="font-bold text-slate-200">{t.shiftTime}</span>
+                        {/* Shift, Vehicle, Station Details */}
+                        <div className="flex items-center gap-4 sm:gap-6 pt-3 md:pt-0 border-t md:border-t-0 border-slate-800/80 flex-wrap">
+                          <div>
+                            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                              Shift Time
+                            </div>
+                            <div className="text-xs font-bold text-slate-200 mt-0.5">
+                              {t.shiftTime}
+                            </div>
                           </div>
 
-                          <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800">
-                            <span className="text-[10px] font-bold text-slate-400 block uppercase">Vehicle</span>
-                            <span className="font-bold text-blue-300">{t.vehicle}</span>
+                          <div>
+                            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                              Vehicle
+                            </div>
+                            <div className="text-xs font-bold text-slate-200 mt-0.5">
+                              {t.vehicle}
+                            </div>
                           </div>
 
-                          <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800 col-span-2 sm:col-span-1">
-                            <span className="text-[10px] font-bold text-slate-400 block uppercase">Collection Point</span>
-                            <span className="font-bold text-cyan-300 truncate block">{t.collectionPoint}</span>
+                          <div>
+                            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                              Collection Point
+                            </div>
+                            <div className="text-xs font-bold text-cyan-400 mt-0.5">
+                              {t.collectionPoint}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -587,141 +617,93 @@ export default function CustomerPortal({ onSwitchToAgent }) {
 
       {/* Floating Support Chat Button */}
       <div className="fixed bottom-6 right-6 z-40">
-        {!showChat && (
-          <button
-            onClick={() => setShowChat(true)}
-            className="flex items-center gap-2.5 px-5 py-3.5 rounded-2xl bg-gradient-to-r from-pink-500 to-purple-600 hover:from-pink-600 hover:to-purple-700 text-white font-bold text-sm shadow-2xl shadow-pink-500/30 transition-all hover:scale-105"
-          >
-            <MessageSquare className="w-5 h-5" />
-            <span>Shuttle Support Chat</span>
-          </button>
-        )}
+        <button
+          onClick={() => setShowChat(!showChat)}
+          className="h-14 w-14 rounded-full bg-gradient-to-r from-pink-500 to-rose-600 hover:from-pink-600 hover:to-rose-700 text-white flex items-center justify-center shadow-xl shadow-pink-500/30 transition-all transform hover:scale-105 active:scale-95"
+        >
+          {showChat ? <X className="w-6 h-6" /> : <MessageSquare className="w-6 h-6" />}
+        </button>
       </div>
 
-      {/* Slide-over Support Chat Drawer */}
+      {/* Slide-over Live Support Drawer */}
       {showChat && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex justify-end">
-          <div className="w-full max-w-md bg-slate-950 h-full flex flex-col shadow-2xl border-l border-slate-800 animate-in slide-in-from-right duration-200">
-            {/* Drawer Header */}
-            <div className="p-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="h-9 w-9 rounded-xl bg-pink-500 flex items-center justify-center font-bold text-xs text-white">
-                  GM
-                </div>
-                <div>
-                  <h4 className="text-sm font-bold text-white">GoMini Shuttle Support</h4>
-                  <p className="text-[11px] text-pink-400 font-medium">{passenger?.route}</p>
-                </div>
+        <div className="fixed inset-y-0 right-0 w-full sm:w-96 bg-[#0B132B] border-l border-slate-800 shadow-2xl z-50 flex flex-col animate-in slide-in-from-right duration-200">
+          {/* Chat Header */}
+          <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-[#080E24]">
+            <div className="flex items-center gap-3">
+              <div className="h-9 w-9 rounded-xl bg-pink-500/20 border border-pink-500/30 flex items-center justify-center text-pink-400">
+                <Sparkles className="w-5 h-5" />
               </div>
-
-              <button
-                onClick={() => setShowChat(false)}
-                className="p-2 rounded-xl text-slate-400 hover:text-white bg-slate-800/60"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div>
+                <h4 className="text-sm font-bold text-white">GoMini Support</h4>
+                <p className="text-[11px] text-emerald-400 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  AI Agent & Dispatch Team Online
+                </p>
+              </div>
             </div>
 
-            {/* Quick Action Helpers */}
-            <div className="p-3 bg-slate-900/60 border-b border-slate-800/80 grid grid-cols-2 gap-1.5">
-              <button
-                onClick={() => handleQuickAction('where_is_bus')}
-                className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-left transition-all"
-              >
-                <div className="text-[11px] font-bold text-white flex items-center gap-1.5">
-                  <Bus className="w-3 h-3 text-cyan-400" />
-                  <span>Where is my bus?</span>
-                </div>
-              </button>
+            <button
+              onClick={() => setShowChat(false)}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-all"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
 
-              <button
-                onClick={() => handleQuickAction('delay')}
-                className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-left transition-all"
-              >
-                <div className="text-[11px] font-bold text-white flex items-center gap-1.5">
-                  <Clock className="w-3 h-3 text-amber-400" />
-                  <span>Is it delayed?</span>
+          {/* Messages Body */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            {messages.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400">
+                <div className="h-12 w-12 rounded-2xl bg-slate-800/80 flex items-center justify-center text-slate-500 mb-3">
+                  <MessageSquare className="w-6 h-6" />
                 </div>
-              </button>
-
-              <button
-                onClick={() => handleQuickAction('missed')}
-                className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-left transition-all"
-              >
-                <div className="text-[11px] font-bold text-white flex items-center gap-1.5">
-                  <AlertTriangle className="w-3 h-3 text-rose-400" />
-                  <span>Missed my bus</span>
-                </div>
-              </button>
-
-              <button
-                onClick={() => handleQuickAction('issue')}
-                className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-left transition-all"
-              >
-                <div className="text-[11px] font-bold text-white flex items-center gap-1.5">
-                  <HelpCircle className="w-3 h-3 text-purple-400" />
-                  <span>Report an issue</span>
-                </div>
-              </button>
-            </div>
-
-            {/* Message Thread */}
-            <div className="flex-1 p-4 overflow-y-auto space-y-3">
-              {messages.length === 0 ? (
-                <div className="h-64 flex flex-col items-center justify-center text-center text-slate-500">
-                  <MessageSquare className="w-10 h-10 text-slate-700 mb-2 stroke-[1.2]" />
-                  <p className="text-xs font-bold text-slate-400">How can we help you today?</p>
-                  <p className="text-[11px] text-slate-600 mt-1">Tap a quick action above or send a message</p>
-                </div>
-              ) : (
-                messages.map((m) => {
-                  const isMe = m.sender_type === 'passenger';
-                  const isBot = m.sender_type === 'bot';
-
-                  return (
-                    <div key={m.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                      <span className="text-[10px] text-slate-400 font-semibold mb-1 px-1">
-                        {isMe ? 'You' : isBot ? '🤖 GoMini Bot' : `🧑‍💼 ${m.sender_name || 'Agent'}`}
-                      </span>
-                      <div
-                        className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-sm ${
-                          isMe
-                            ? 'bg-gradient-to-r from-pink-500 to-purple-600 text-white rounded-tr-none'
-                            : isBot
-                            ? 'bg-slate-900 text-slate-200 border border-slate-800 rounded-tl-none'
-                            : 'bg-blue-600 text-white rounded-tl-none'
-                        }`}
-                      >
-                        {m.body}
-                      </div>
-                      <span className="text-[9px] text-slate-500 mt-1 px-1">
-                        {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
+                <p className="text-xs font-semibold text-slate-300">How can we help your commute today?</p>
+                <p className="text-[11px] text-slate-500 mt-1">Ask about bus location, report a delay, or request assistance.</p>
+              </div>
+            ) : (
+              messages.map((m) => {
+                const isPax = m.sender_type === 'passenger';
+                return (
+                  <div key={m.id} className={`flex flex-col ${isPax ? 'items-end' : 'items-start'}`}>
+                    <span className="text-[10px] text-slate-500 mb-0.5 px-1 font-medium">
+                      {isPax ? 'You' : m.sender_name || 'Support'}
+                    </span>
+                    <div
+                      className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-xs ${
+                        isPax
+                          ? 'bg-gradient-to-r from-pink-500 to-rose-600 text-white rounded-tr-none shadow-md shadow-pink-500/10'
+                          : 'bg-[#0F1B3E] text-slate-200 border border-slate-700/60 rounded-tl-none'
+                      }`}
+                    >
+                      {m.body}
                     </div>
-                  );
-                })
-              )}
-              <div ref={messagesEndRef} />
-            </div>
+                  </div>
+                );
+              })
+            )}
+            <div ref={messagesEndRef} />
+          </div>
 
-            {/* Input Bar */}
-            <form onSubmit={handleSendMessage} className="p-3 bg-slate-900 border-t border-slate-800 flex items-center gap-2">
+          {/* Chat Input */}
+          <form onSubmit={handleSendMessage} className="p-3 border-t border-slate-800 bg-[#080E24]">
+            <div className="flex items-center gap-2">
               <input
                 type="text"
                 value={inputMsg}
                 onChange={(e) => setInputMsg(e.target.value)}
-                placeholder="Type a message to support..."
-                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-pink-500"
+                placeholder="Ask about your bus, route, or timing..."
+                className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-pink-500"
               />
               <button
                 type="submit"
-                disabled={!inputMsg.trim() || sendingMsg}
-                className="h-10 px-4 rounded-xl bg-pink-500 hover:bg-pink-600 disabled:opacity-40 text-white font-bold text-xs flex items-center justify-center transition-all"
+                disabled={sendingMsg || !inputMsg.trim()}
+                className="p-2 rounded-xl bg-pink-500 hover:bg-pink-600 disabled:opacity-40 text-white transition-all shadow-md shadow-pink-500/20"
               >
-                <Send className="w-3.5 h-3.5" />
+                <Send className="w-4 h-4" />
               </button>
-            </form>
-          </div>
+            </div>
+          </form>
         </div>
       )}
     </div>
